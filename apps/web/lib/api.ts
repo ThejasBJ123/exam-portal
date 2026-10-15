@@ -90,6 +90,8 @@ export type College = {
   minDurationMinutes: number; // e.g. 30 (min duration before student can submit)
   maxDurationMinutes: number; // e.g. 60 (max duration, auto-submits on expiry)
   requireLoginApproval: boolean; // whether student login requires staff/admin approval
+  examStarted?: boolean; // whether admin/staff has granted permission to start the exam
+  examStartedAt?: string | null;
   examConfigs?: Record<string, ExamDurationConfig>; // Optional per-exam override
 };
 
@@ -105,6 +107,8 @@ export const defaultColleges: College[] = [
     minDurationMinutes: 30,
     maxDurationMinutes: 60,
     requireLoginApproval: true,
+    examStarted: true,
+    examStartedAt: "2026-10-10T08:00:00.000Z",
   },
   {
     id: "col-2",
@@ -117,6 +121,8 @@ export const defaultColleges: College[] = [
     minDurationMinutes: 30,
     maxDurationMinutes: 60,
     requireLoginApproval: true,
+    examStarted: true,
+    examStartedAt: "2026-10-10T09:00:00.000Z",
   },
   {
     id: "col-3",
@@ -129,6 +135,8 @@ export const defaultColleges: College[] = [
     minDurationMinutes: 30,
     maxDurationMinutes: 60,
     requireLoginApproval: false,
+    examStarted: true,
+    examStartedAt: "2026-10-10T10:00:00.000Z",
   },
   {
     id: "col-4",
@@ -141,6 +149,8 @@ export const defaultColleges: College[] = [
     minDurationMinutes: 30,
     maxDurationMinutes: 60,
     requireLoginApproval: true,
+    examStarted: true,
+    examStartedAt: "2026-10-10T11:00:00.000Z",
   },
 ];
 
@@ -150,8 +160,11 @@ export type QuestionPaper = {
   code: string;
   description: string;
   durationMinutes: number;
+  minDurationMinutes?: number;
   passPercent: number;
   status: "ACTIVE" | "ARCHIVED";
+  isLive?: boolean;
+  startedAt?: string | null;
   createdAt: string;
 };
 
@@ -161,9 +174,12 @@ export const defaultPapers: QuestionPaper[] = [
     title: "Graduate Aptitude Screen 2026 (Quantitative Aptitude)",
     code: "KGS-2026",
     description: "Quantitative problem solving, arithmetic equations, speed & distance, percentage, and work rate.",
-    durationMinutes: 30,
+    durationMinutes: 60,
+    minDurationMinutes: 30,
     passPercent: 50,
     status: "ACTIVE",
+    isLive: true,
+    startedAt: "2026-10-10T08:00:00.000Z",
     createdAt: "2026-10-10T08:00:00.000Z",
   },
   {
@@ -171,9 +187,12 @@ export const defaultPapers: QuestionPaper[] = [
     title: "Question Paper Set 2: Logical & Analytical Reasoning",
     code: "SET-DEV-2026",
     description: "Analytical reasoning, direction sense, pattern series, coding-decoding, and clock/calendar logic.",
-    durationMinutes: 30,
+    durationMinutes: 60,
+    minDurationMinutes: 30,
     passPercent: 50,
     status: "ACTIVE",
+    isLive: true,
+    startedAt: "2026-10-10T09:00:00.000Z",
     createdAt: "2026-10-10T09:00:00.000Z",
   },
   {
@@ -181,9 +200,12 @@ export const defaultPapers: QuestionPaper[] = [
     title: "Question Paper Set 3: Quantitative Reasoning & Logic Assessment",
     code: "SET-APT-2026",
     description: "Probability, number progression series, time-work analysis, and family relationship deductions.",
-    durationMinutes: 30,
+    durationMinutes: 60,
+    minDurationMinutes: 30,
     passPercent: 50,
     status: "ACTIVE",
+    isLive: true,
+    startedAt: "2026-10-10T10:00:00.000Z",
     createdAt: "2026-10-10T10:00:00.000Z",
   },
 ];
@@ -426,7 +448,8 @@ const defaultExam = {
   accessCode: "KGS-2026",
   kind: "OBJECTIVE_MCQ",
   description: "Timed quantitative aptitude, logical reasoning, and analytical screen.",
-  durationMinutes: 30,
+  durationMinutes: 60,
+  minDurationMinutes: 30,
   passPercent: 50,
   status: "PUBLISHED",
   runs: [{ id: "run-1", startedAt: new Date().toISOString(), status: "LIVE" }],
@@ -1336,6 +1359,8 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
           minDurationMinutes: minDur,
           maxDurationMinutes: maxDur,
           requireLoginApproval: requireLoginApproval !== undefined ? Boolean(requireLoginApproval) : true,
+          examStarted: body.examStarted !== undefined ? Boolean(body.examStarted) : true,
+          examStartedAt: (body.examStarted ?? true) ? new Date().toISOString() : null,
           examConfigs: examConfigs || {},
         };
 
@@ -1369,6 +1394,10 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       if (body.requireLoginApproval !== undefined) {
         targetCol.requireLoginApproval = Boolean(body.requireLoginApproval);
       }
+      if (body.examStarted !== undefined) {
+        targetCol.examStarted = Boolean(body.examStarted);
+        targetCol.examStartedAt = targetCol.examStarted ? (targetCol.examStartedAt || new Date().toISOString()) : null;
+      }
       if (body.examConfigs !== undefined) {
         targetCol.examConfigs = body.examConfigs;
       }
@@ -1386,12 +1415,42 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
           minDuration: targetCol.minDurationMinutes,
           maxDuration: targetCol.maxDurationMinutes,
           requireLoginApproval: targetCol.requireLoginApproval,
+          examStarted: targetCol.examStarted,
         },
         createdAt: new Date().toISOString(),
         actor: { email: store.currentUser?.email || "admin@kaizentrix.com" },
       });
       saveStore(store);
       return targetCol;
+    }
+
+    // Specific College operations: /colleges/:id/toggle-start (Toggle live exam start permission)
+    if (path.includes("/toggle-start") && method === "POST") {
+      const parts = path.split("/");
+      const colId = parts[parts.indexOf("toggle-start") - 1];
+      const targetCol = store.colleges.find((c: any) => c.id === colId);
+      if (!targetCol) throw new ApiError(404, "College not found.");
+
+      targetCol.examStarted = !targetCol.examStarted;
+      targetCol.examStartedAt = targetCol.examStarted ? new Date().toISOString() : null;
+      if (targetCol.examStarted) {
+        store.exam.runs[0] = { id: "run-1", startedAt: targetCol.examStartedAt, status: "LIVE" };
+      }
+
+      if (!store.auditLogs) store.auditLogs = [];
+      store.auditLogs.unshift({
+        id: `log-${Date.now()}`,
+        action: targetCol.examStarted ? "COLLEGE_EXAM_START_PERMITTED" : "COLLEGE_EXAM_START_REVOKED",
+        entity: `College (${targetCol.name})`,
+        metadata: {
+          examStarted: targetCol.examStarted,
+          examStartedAt: targetCol.examStartedAt,
+        },
+        createdAt: new Date().toISOString(),
+        actor: { email: store.currentUser?.email || "admin@kaizentrix.com" },
+      });
+      saveStore(store);
+      return { ok: true, examStarted: targetCol.examStarted, examStartedAt: targetCol.examStartedAt, college: targetCol };
     }
 
     // Specific College operations: /colleges/:id/students (List candidates enrolled for this college)
@@ -1424,20 +1483,10 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       student.loginApprovedAt = new Date().toISOString();
       student.loginApprovedBy = store.currentUser?.email || "staff@kaizentrix.com";
 
-      if (store.currentUser && (store.currentUser.id === student.id || store.currentUser.phone === student.phone)) {
-        store.currentUser.loginApproved = true;
-        store.currentUser.approvalStatus = "APPROVED";
-        store.currentUser.loginApprovedAt = student.loginApprovedAt;
-        store.currentUser.loginApprovedBy = student.loginApprovedBy;
-      }
-
       // Also update matching session if present
       const curSess = getSessionForUser(store, student);
       if (curSess) {
         curSess.isLoginApproved = true;
-      }
-      if (store.session && (store.session.studentId === student.id || store.session.phone === student.phone)) {
-        store.session.isLoginApproved = true;
       }
 
       if (!store.auditLogs) store.auditLogs = [];
@@ -1472,14 +1521,6 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
         }
       });
 
-      if (store.currentUser && store.currentUser.collegeCode && store.currentUser.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
-        store.currentUser.loginApproved = true;
-        store.currentUser.approvalStatus = "APPROVED";
-      }
-      if (store.session) {
-        store.session.isLoginApproved = true;
-      }
-
       if (!store.auditLogs) store.auditLogs = [];
       store.auditLogs.unshift({
         id: `log-${Date.now()}`,
@@ -1506,55 +1547,11 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       delete student.loginApprovedAt;
       delete student.loginApprovedBy;
 
-      if (store.currentUser && (store.currentUser.id === student.id || store.currentUser.phone === student.phone)) {
-        store.currentUser.loginApproved = false;
-        store.currentUser.approvalStatus = "PENDING";
-        delete store.currentUser.loginApprovedAt;
-        delete store.currentUser.loginApprovedBy;
-      }
-
       const curSess = getSessionForUser(store, student);
       if (curSess) curSess.isLoginApproved = false;
-      if (store.session && (store.session.studentId === student.id || store.session.phone === student.phone)) {
-        store.session.isLoginApproved = false;
-      }
 
       saveStore(store);
       return { ok: true, student };
-    }
-
-    // Specific College operations: /colleges/:id/revoke-all-students
-    if (path.includes("/revoke-all-students") && method === "POST") {
-      const parts = path.split("/");
-      const colId = parts[parts.indexOf("revoke-all-students") - 1];
-      const targetCol = store.colleges.find((c: any) => c.id === colId);
-      if (!targetCol) throw new ApiError(404, "College not found.");
-
-      let revokedCount = 0;
-      (store.users || []).forEach((u: any) => {
-        if (u.role === "STUDENT" && u.collegeCode && u.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
-          u.loginApproved = false;
-          u.approvalStatus = "PENDING";
-          delete u.loginApprovedAt;
-          delete u.loginApprovedBy;
-          const sess = getSessionForUser(store, u);
-          if (sess) sess.isLoginApproved = false;
-          revokedCount++;
-        }
-      });
-
-      if (store.currentUser && store.currentUser.collegeCode && store.currentUser.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
-        store.currentUser.loginApproved = false;
-        store.currentUser.approvalStatus = "PENDING";
-        delete store.currentUser.loginApprovedAt;
-        delete store.currentUser.loginApprovedBy;
-      }
-      if (store.session) {
-        store.session.isLoginApproved = false;
-      }
-
-      saveStore(store);
-      return { ok: true, revokedCount };
     }
 
     // Specific College operations: /colleges/:id/assign-papers
@@ -1850,15 +1847,19 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     if (method === "POST") {
       const examId = `paper-set-${Date.now()}`;
       const code = (body.accessCode || `KGS-${Math.floor(1000 + Math.random() * 9000)}`).toUpperCase().trim();
+      const dur = Number(body.durationMinutes) || 60;
+      const minDur = Number(body.minDurationMinutes) > 0 ? Number(body.minDurationMinutes) : Math.min(dur, 30);
       const newExam = {
         id: examId,
         title: body.title,
         kind: body.kind || "OBJECTIVE_MCQ",
         accessCode: code,
-        durationMinutes: Number(body.durationMinutes) || 30,
+        durationMinutes: dur,
+        minDurationMinutes: minDur,
         passPercent: Number(body.passPercent) || 50,
         description: body.description || "",
         status: "PUBLISHED",
+        isLive: true,
         runs: [{ id: `run-${Date.now()}`, startedAt: new Date().toISOString(), status: "LIVE" }],
       };
       if (!store.exams) store.exams = [store.exam];
@@ -1871,9 +1872,12 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
         title: body.title,
         code: code,
         description: body.description || "",
-        durationMinutes: Number(body.durationMinutes) || 30,
+        durationMinutes: dur,
+        minDurationMinutes: minDur,
         passPercent: Number(body.passPercent) || 50,
         status: "ACTIVE",
+        isLive: true,
+        startedAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
       });
 
@@ -1957,14 +1961,51 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       id: p.id,
       title: p.title,
       status: p.status === "ACTIVE" ? "PUBLISHED" : "DRAFT",
-      durationMinutes: p.durationMinutes ?? 30,
+      durationMinutes: p.durationMinutes ?? 60,
+      minDurationMinutes: p.minDurationMinutes ?? Math.min(p.durationMinutes ?? 60, 30),
       passPercent: p.passPercent ?? 50,
       kind: "OBJECTIVE_MCQ",
       accessCode: p.code,
       code: p.code,
       description: p.description,
+      isLive: p.isLive ?? true,
+      startedAt: p.startedAt ?? store.exam.runs[0]?.startedAt,
       totalQuestions: (store.questions || []).filter((q: any) => q.paperId === p.id).length || 4,
     }));
+  }
+
+  // Update Exam Timing & Minimum Duration
+  if (path.endsWith("/timing") && path.startsWith("/exams/")) {
+    const parts = path.split("/");
+    const examId = parts[2];
+    const targetPaper = store.papers?.find((p: any) => p.id === examId) || store.exam;
+    if (body.durationMinutes !== undefined) {
+      targetPaper.durationMinutes = Math.max(1, Number(body.durationMinutes));
+    }
+    if (body.minDurationMinutes !== undefined) {
+      targetPaper.minDurationMinutes = Math.max(1, Number(body.minDurationMinutes));
+    }
+    if (targetPaper.minDurationMinutes > targetPaper.durationMinutes) {
+      targetPaper.minDurationMinutes = targetPaper.durationMinutes;
+    }
+    saveStore(store);
+    return targetPaper;
+  }
+
+  // Toggle Live Exam Start Permission for an Exam Set
+  if (path.endsWith("/toggle-live") && path.startsWith("/exams/")) {
+    const parts = path.split("/");
+    const examId = parts[2];
+    const targetPaper = store.papers?.find((p: any) => p.id === examId) || store.exam;
+    const isLive = !targetPaper.isLive;
+    targetPaper.isLive = isLive;
+    targetPaper.startedAt = isLive ? new Date().toISOString() : null;
+    if (store.exam.runs && store.exam.runs[0]) {
+      store.exam.runs[0].status = isLive ? "LIVE" : "STOPPED";
+      store.exam.runs[0].startedAt = targetPaper.startedAt;
+    }
+    saveStore(store);
+    return { ok: true, isLive, startedAt: targetPaper.startedAt, exam: targetPaper };
   }
 
   if (path.startsWith("/exams/") && method === "DELETE") {
@@ -2079,9 +2120,22 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     return { ok: true, status: "PUBLISHED" };
   }
   if (path.endsWith("/start")) {
-    store.exam.runs[0] = { id: "run-1", startedAt: new Date().toISOString(), status: "LIVE" };
+    const nowIso = new Date().toISOString();
+    store.exam.runs[0] = { id: "run-1", startedAt: nowIso, status: "LIVE" };
+    if (store.colleges) {
+      store.colleges.forEach((c: any) => {
+        c.examStarted = true;
+        c.examStartedAt = nowIso;
+      });
+    }
+    if (store.papers) {
+      store.papers.forEach((p: any) => {
+        p.isLive = true;
+        p.startedAt = nowIso;
+      });
+    }
     store.session.status = "READY";
-    store.session.serverDeadlineAt = new Date(Date.now() + store.exam.durationMinutes * 60 * 1000).toISOString();
+    store.session.serverDeadlineAt = new Date(Date.now() + (store.exam.durationMinutes || 60) * 60 * 1000).toISOString();
     saveStore(store);
     return store.exam.runs[0];
   }
@@ -2213,42 +2267,13 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       return { exam: dynamicExam, session: curSess };
     });
   }
-  if (path.endsWith("/quick-approve") || path.endsWith("/approve-login")) {
-    const userInList = (store.users || []).find(
-      (u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone)
-    );
-    const targetUser = userInList || store.currentUser;
-    if (targetUser) {
-      targetUser.loginApproved = true;
-      targetUser.approvalStatus = "APPROVED";
-      targetUser.loginApprovedAt = new Date().toISOString();
-      targetUser.loginApprovedBy = "staff@kaizentrix.com (Instant Verification)";
-    }
-    if (userInList) {
-      userInList.loginApproved = true;
-      userInList.approvalStatus = "APPROVED";
-    }
-    if (store.currentUser) {
-      store.currentUser.loginApproved = true;
-      store.currentUser.approvalStatus = "APPROVED";
-    }
-    const curSess = getSessionForUser(store, targetUser);
-    if (curSess) curSess.isLoginApproved = true;
-    if (store.session) store.session.isLoginApproved = true;
-    saveStore(store);
-    return { ok: true, message: "Candidate login approved by invigilator." };
-  }
-
   if (path.startsWith("/student/exams/")) {
-    const userInList = (store.users || []).find(
-      (u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone)
-    );
-    const curUser = userInList || store.currentUser;
-    const curSess = getSessionForUser(store, curUser);
+    const curSess = getSessionForUser(store, store.currentUser);
     store.session = curSess;
     const parts = path.split("/");
     const requestedExamId = parts[3];
 
+    const curUser = store.currentUser;
     const college = curUser?.collegeCode
       ? (store.colleges || defaultColleges).find((c: any) => c.code && c.code.toUpperCase() === curUser.collegeCode.toUpperCase())
       : (store.colleges || defaultColleges)[0];
@@ -2265,39 +2290,17 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
 
     const activePaper = store.papers?.find((p: any) => p.id === targetPaperId) || store.papers?.[0] || store.exam;
 
-    const minDur = (college?.examConfigs?.[activePaper.id]?.minDurationMinutes) ?? college?.minDurationMinutes ?? 30;
+    const minDur = (college?.examConfigs?.[activePaper.id]?.minDurationMinutes) ?? college?.minDurationMinutes ?? activePaper.minDurationMinutes ?? 30;
     const maxDur = (college?.examConfigs?.[activePaper.id]?.maxDurationMinutes) ?? college?.maxDurationMinutes ?? (activePaper.durationMinutes || 60);
     const requireApproval = (college?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? college?.requireLoginApproval ?? true;
-
-    // Resolve approval status accurately across session, user record in list, and current user
-    const isApproved = Boolean(
-      !requireApproval ||
-      curSess?.isLoginApproved === true ||
-      curUser?.loginApproved === true ||
-      userInList?.loginApproved === true ||
-      store.currentUser?.loginApproved === true
-    );
-
-    // Keep all session and user flags in sync
-    if (isApproved) {
-      if (curSess) curSess.isLoginApproved = true;
-      if (curUser) {
-        curUser.loginApproved = true;
-        curUser.approvalStatus = "APPROVED";
-      }
-      if (userInList) {
-        userInList.loginApproved = true;
-        userInList.approvalStatus = "APPROVED";
-      }
-      if (store.currentUser && (store.currentUser.id === curUser?.id || store.currentUser.phone === curUser?.phone)) {
-        store.currentUser.loginApproved = true;
-        store.currentUser.approvalStatus = "APPROVED";
-      }
-    }
+    const isApproved = curUser?.loginApproved ?? !requireApproval;
+    const isExamStartPermitted = Boolean((college?.examStarted ?? true) && (activePaper.isLive !== false));
+    const effectiveStartedAt = isExamStartPermitted
+      ? (college?.examStartedAt || activePaper.startedAt || store.exam.runs[0]?.startedAt || new Date().toISOString())
+      : null;
 
     return {
       id: curSess.id,
-      studentId: curUser?.id,
       status: curSess.status,
       readinessOk: curSess.readinessOk,
       consentAt: curSess.consentAt,
@@ -2306,9 +2309,10 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       maxDurationMinutes: maxDur,
       requireLoginApproval: requireApproval,
       isLoginApproved: isApproved,
-      approvalStatus: isApproved ? "APPROVED" : (curUser?.approvalStatus || "PENDING"),
+      isExamStartPermitted,
+      approvalStatus: curUser?.approvalStatus ?? (isApproved ? "APPROVED" : "PENDING"),
       examRun: {
-        startedAt: store.exam.runs[0]?.startedAt,
+        startedAt: effectiveStartedAt,
         exam: {
           ...store.exam,
           id: activePaper.id,
@@ -2321,6 +2325,7 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
           collegeCode: college?.code,
           requireLoginApproval: requireApproval,
           isLoginApproved: isApproved,
+          isExamStartPermitted,
         },
       },
     };
@@ -2361,9 +2366,8 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     if (termRest || curSess.status === "TERMINATED" || curSess.warningCount >= 3 || store.currentUser?.isTerminated) {
       throw new ApiError(403, "Access Blocked: Your examination sitting was terminated due to exceeding 3 proctoring alerts. You cannot re-enter or take exams.");
     }
-    const userInList = (store.users || []).find((u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone));
-    if (curSess.status === "SUBMITTED" || curSess.status === "TIMED_OUT" || userInList?.examStatus === "SUBMITTED" || userInList?.examStatus === "TIMED_OUT") {
-      throw new ApiError(403, "Examination Already Ended: You have completed and submitted this examination. Under institutional single-attempt policy, re-joining or re-attempting is strictly prohibited.");
+    if (curSess.status === "SUBMITTED" || curSess.status === "TIMED_OUT") {
+      throw new ApiError(403, "Examination already submitted. Under the single-attempt policy, re-attempts are prohibited.");
     }
 
     // Verify candidate college & login approval settings
@@ -2374,22 +2378,24 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     const targetPaperId = curSess.paperId || store.currentUser?.paperId || store.papers?.[0]?.id;
     const activePaper = store.papers?.find((p: any) => p.id === targetPaperId) || store.papers?.[0] || store.exam;
 
-    const minDuration = (candidateCollege?.examConfigs?.[activePaper.id]?.minDurationMinutes) ?? candidateCollege?.minDurationMinutes ?? 30;
+    const minDuration = (candidateCollege?.examConfigs?.[activePaper.id]?.minDurationMinutes) ?? candidateCollege?.minDurationMinutes ?? activePaper.minDurationMinutes ?? 30;
     const maxDuration = (candidateCollege?.examConfigs?.[activePaper.id]?.maxDurationMinutes) ?? candidateCollege?.maxDurationMinutes ?? (activePaper.durationMinutes || 60);
     const requireApproval = (candidateCollege?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? candidateCollege?.requireLoginApproval ?? true;
 
     // Login Approval Check
-    const isCandidateApproved = Boolean(
-      !requireApproval ||
-      curSess?.isLoginApproved === true ||
-      userInList?.loginApproved === true ||
-      store.currentUser?.loginApproved === true
-    );
-
-    if (requireApproval && !isCandidateApproved) {
+    if (requireApproval && store.currentUser && store.currentUser.loginApproved === false) {
       throw new ApiError(
         403,
         `Student Login Approval Required: An Invigilator or Administrator must approve your candidate login before you can begin the examination. Please wait in the examination lobby or notify your proctor.`
+      );
+    }
+
+    // Exam Start Permission Gatekeeper Check
+    const isExamStartPermitted = Boolean((candidateCollege?.examStarted ?? true) && (activePaper.isLive !== false));
+    if (!isExamStartPermitted) {
+      throw new ApiError(
+        403,
+        `Exam Start Permission Required: An Administrator or Staff invigilator must grant start permission for this examination batch before candidates can begin. Please wait in the examination lobby.`
       );
     }
 
@@ -2489,12 +2495,6 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       curSess.terminatedReason = "MAX_WARNINGS_EXCEEDED";
     }
     store.session = curSess;
-
-    const candUser = (store.users || []).find((u: any) => u.id === curSess.studentId || (curSess.phone && u.phone === curSess.phone) || (store.currentUser && u.id === store.currentUser.id));
-    if (candUser) {
-      candUser.examStatus = curSess.status;
-      candUser.submittedAt = new Date().toISOString();
-    }
 
     if (store.currentUser) {
       store.currentUser.examStatus = curSess.status;

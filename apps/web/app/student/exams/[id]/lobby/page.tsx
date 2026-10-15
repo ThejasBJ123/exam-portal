@@ -10,12 +10,12 @@ export default function StudentLobbyPage() {
   const router = useRouter();
   const [session, setSession] = useState<{
     id: string;
-    studentId?: string;
     status: string;
     minDurationMinutes?: number;
     maxDurationMinutes?: number;
     requireLoginApproval?: boolean;
     isLoginApproved?: boolean;
+    isExamStartPermitted?: boolean;
     approvalStatus?: string;
     examRun: {
       startedAt: string | null;
@@ -26,12 +26,11 @@ export default function StudentLobbyPage() {
         maxDurationMinutes?: number;
         collegeName?: string;
         collegeCode?: string;
+        isExamStartPermitted?: boolean;
       };
     };
   } | null>(null);
   const [starting, setStarting] = useState(false);
-  const [approving, setApproving] = useState(false);
-  const [justApproved, setJustApproved] = useState(false);
 
   useEffect(() => {
     const load = () =>
@@ -44,15 +43,10 @@ export default function StudentLobbyPage() {
           router.replace(`/student/results/${id}`);
           return;
         }
-        setSession((prev) => {
-          if (prev && !prev.isLoginApproved && res?.isLoginApproved) {
-            setJustApproved(true);
-          }
-          return res;
-        });
+        setSession(res);
       });
     load();
-    const timer = setInterval(load, 2500);
+    const timer = setInterval(load, 3000);
     return () => clearInterval(timer);
   }, [id, router]);
 
@@ -62,20 +56,6 @@ export default function StudentLobbyPage() {
     const refreshed = await api<typeof session>(`/student/exams/${id}`);
     setSession(refreshed);
     setStarting(false);
-  }
-
-  async function simulateApprove() {
-    setApproving(true);
-    try {
-      await api(`/student/quick-approve`, { method: "POST" });
-      const refreshed = await api<typeof session>(`/student/exams/${id}`);
-      setSession(refreshed);
-      setJustApproved(true);
-    } catch {
-      // ignore
-    } finally {
-      setApproving(false);
-    }
   }
 
   if (!session) {
@@ -88,36 +68,43 @@ export default function StudentLobbyPage() {
 
   const live = Boolean(session.examRun.startedAt);
   const isAwaitingApproval = session.requireLoginApproval && !session.isLoginApproved;
-  const isApproved = !session.requireLoginApproval || session.isLoginApproved;
+  const isStartPermitted = session.isExamStartPermitted !== false;
+  const canEnterExam = live && !isAwaitingApproval && isStartPermitted;
+
   const minDur = session.minDurationMinutes || session.examRun.exam.minDurationMinutes || 30;
   const maxDur = session.maxDurationMinutes || session.examRun.exam.durationMinutes || 60;
-  const collegeName = session.examRun.exam.collegeName;
-  const collegeCode = session.examRun.exam.collegeCode;
+  const collegeName = session.examRun.exam.collegeName || "Institutional Assessment";
+  const collegeCode = session.examRun.exam.collegeCode || "DEFAULT";
 
   return (
-    <div className="container" style={{ padding: "3rem 1rem 5rem", maxWidth: "800px" }}>
-      <div style={{ marginBottom: "1.5rem" }}>
-        <Link href="/student/dashboard" style={{ fontSize: "0.9rem", color: "var(--muted)", textDecoration: "none" }}>
-          &larr; Back to Assigned Assessments
-        </Link>
-      </div>
-
-      <div className="card" style={{ padding: "2.5rem 2rem", textAlign: "center" }}>
-        {/* Dynamic Status Pill */}
+    <div className="container" style={{ padding: "3.5rem 0 5rem", maxWidth: "840px" }}>
+      <div className="card" style={{ padding: "2.75rem", textAlign: "center", boxShadow: "0 10px 30px rgba(0,0,0,0.06)" }}>
+        {/* Top Status Pill */}
         <div
           style={{
             display: "inline-flex",
             alignItems: "center",
-            gap: "0.55rem",
-            background: isAwaitingApproval ? "#FEF3C7" : "#DCFCE7",
-            color: isAwaitingApproval ? "#B45309" : "#15803D",
-            border: isAwaitingApproval ? "1px solid #FCD34D" : "1px solid #86EFAC",
-            padding: "0.45rem 1.15rem",
+            gap: "0.5rem",
+            background: isAwaitingApproval
+              ? "#FEF3C7"
+              : !isStartPermitted
+              ? "#F3E8FF"
+              : live
+              ? "var(--success-bg)"
+              : "var(--warning-bg)",
+            color: isAwaitingApproval
+              ? "#B45309"
+              : !isStartPermitted
+              ? "#6B21A8"
+              : live
+              ? "var(--success)"
+              : "var(--warning)",
+            padding: "0.45rem 1.2rem",
             borderRadius: "9999px",
             fontWeight: 700,
-            fontSize: "0.85rem",
+            fontSize: "0.86rem",
             marginBottom: "1.5rem",
-            letterSpacing: "0.03em",
+            letterSpacing: "0.02em",
           }}
         >
           <span
@@ -125,161 +112,147 @@ export default function StudentLobbyPage() {
               width: "10px",
               height: "10px",
               borderRadius: "50%",
-              background: isAwaitingApproval ? "#D97706" : "#16A34A",
-              boxShadow: isAwaitingApproval ? "0 0 6px #F59E0B" : "0 0 8px #22C55E",
-              animation: isAwaitingApproval ? "pulse 1.2s infinite alternate" : undefined,
+              background: "currentColor",
+              animation: "pulse 1s infinite alternate",
             }}
           />
           {isAwaitingApproval
-            ? "AWAITING INVIGILATOR / ADMIN LOGIN APPROVAL"
+            ? "AWAITING STUDENT LOGIN APPROVAL (ADMIN / STAFF)"
+            : !isStartPermitted
+            ? "WAITING FOR ADMIN / STAFF EXAM START PERMISSION"
             : live
-            ? "EXAMINATION BATCH IS LIVE & APPROVED"
-            : "LOGIN APPROVED — READY TO BEGIN"}
+            ? "EXAMINATION BATCH IS LIVE & PERMITTED"
+            : "WAITING FOR INVIGILATOR AUTHORIZATION"}
         </div>
 
-        <h1 style={{ fontSize: "2.1rem", marginBottom: "0.5rem", color: "var(--text)" }}>
-          {session.examRun.exam.title}
-        </h1>
+        <h1 style={{ fontSize: "2.1rem", marginBottom: "0.4rem", fontWeight: 800 }}>{session.examRun.exam.title}</h1>
+        <div style={{ color: "var(--muted)", fontSize: "0.92rem", marginBottom: "1.5rem" }}>
+          Affiliation: <strong>{collegeName}</strong> ({collegeCode})
+        </div>
 
-        {collegeName ? (
-          <div style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", margin: "0 auto 1rem", fontSize: "0.88rem", color: "var(--muted)" }}>
-            <span>🏛️ {collegeName}</span>
-            {collegeCode ? (
-              <span style={{ background: "var(--light)", padding: "2px 6px", borderRadius: "4px", fontFamily: "var(--font-mono)", fontSize: "0.8rem" }}>
-                {collegeCode}
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-
-        <p style={{ maxWidth: "580px", margin: "0 auto 1.75rem", fontSize: "1.05rem", lineHeight: 1.6, color: "var(--text)" }}>
+        <p style={{ maxWidth: "620px", margin: "0 auto 2rem", fontSize: "1.02rem", color: "var(--text)", lineHeight: 1.6 }}>
           {isAwaitingApproval
-            ? "Your college requires administrator or invigilator approval for student login. Please stand by while staff approves your credentials."
-            : "Your candidate credentials and identity have been verified by the invigilator. You are authorized to begin your live examination sitting."}
+            ? "Your college requires administrator or invigilator approval for candidate login. Please stand by while staff approves your credentials."
+            : !isStartPermitted
+            ? "Your login is verified. Please stand by in this lobby while the Administrator or assigned Staff invigilator grants official start permission for your examination batch."
+            : live
+            ? "Your invigilator has authorized the batch on the server. The timer has started. Click below to enter your live examination."
+            : "Your hardware readiness and proctoring consent are verified. Please stand by while the assigned invigilator authorizes the batch."}
         </p>
 
-        {/* State Banners */}
-        {isAwaitingApproval ? (
+        {/* Informational Alerts */}
+        {isAwaitingApproval && (
           <div
             style={{
               background: "#FFFBEB",
               border: "1px solid #FCD34D",
-              borderRadius: "12px",
-              padding: "1.25rem 1.5rem",
-              maxWidth: "540px",
+              borderRadius: "10px",
+              padding: "1.25rem",
+              maxWidth: "580px",
               margin: "0 auto 1.75rem",
               textAlign: "left",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#92400E", fontWeight: 700, marginBottom: "0.4rem", fontSize: "0.95rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#92400E", fontWeight: 700, marginBottom: "0.4rem" }}>
               <span>🛡️</span>
-              <span>Institution Login Verification</span>
+              <span>Step 1: Student Login Verification Required</span>
             </div>
-            <p style={{ margin: 0, fontSize: "0.88rem", color: "#78350F", lineHeight: 1.55 }}>
-              Your login request is in the pending queue for invigilator review. Once approved from the Staff or Admin dashboard, this screen will automatically refresh and unlock your examination access.
-            </p>
-          </div>
-        ) : (
-          <div
-            style={{
-              background: "#F0FDF4",
-              border: "1px solid #86EFAC",
-              borderRadius: "12px",
-              padding: "1.25rem 1.5rem",
-              maxWidth: "540px",
-              margin: "0 auto 1.75rem",
-              textAlign: "left",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#166534", fontWeight: 700, marginBottom: "0.4rem", fontSize: "0.95rem" }}>
-              <span>✅</span>
-              <span>Staff & Invigilator Approval Confirmed</span>
-            </div>
-            <p style={{ margin: 0, fontSize: "0.88rem", color: "#14532D", lineHeight: 1.55 }}>
-              Your candidate credentials have been authorized by the invigilator. Examination security, webcam monitoring, and the server timer are active. Click below to begin your examination.
+            <p style={{ margin: 0, fontSize: "0.88rem", color: "#78350F", lineHeight: 1.5 }}>
+              Your login request is in the pending approval queue. Once an Admin or Staff invigilator approves your login from the roster, this screen will automatically refresh.
             </p>
           </div>
         )}
 
-        {/* Exam Parameter Summary Box */}
-        <div style={{ background: "var(--light)", borderRadius: "12px", padding: "1.5rem", maxWidth: "540px", margin: "0 auto 2rem", textAlign: "left", border: "1px solid var(--border)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem" }}>
-            <span style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Candidate Status:</span>
-            <strong style={{ color: isAwaitingApproval ? "#B45309" : "#16A34A", display: "inline-flex", alignItems: "center", gap: "0.3rem" }}>
-              {isAwaitingApproval ? "⏳ Pending Login Approval" : "✓ Approved & Authorized"}
+        {!isAwaitingApproval && !isStartPermitted && (
+          <div
+            style={{
+              background: "#FAF5FF",
+              border: "1px solid #D8B4FE",
+              borderRadius: "10px",
+              padding: "1.25rem",
+              maxWidth: "580px",
+              margin: "0 auto 1.75rem",
+              textAlign: "left",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#6B21A8", fontWeight: 700, marginBottom: "0.4rem" }}>
+              <span>⏸️</span>
+              <span>Step 2: Awaiting Exam Start Permission from Admin / Staff</span>
+            </div>
+            <p style={{ margin: 0, fontSize: "0.88rem", color: "#581C87", lineHeight: 1.5 }}>
+              Your login is approved, but the invigilator has not yet issued the official Start Permission for this college batch. Once granted in the portal, your examination will automatically unlock.
+            </p>
+          </div>
+        )}
+
+        {/* Policy Summary Card */}
+        <div style={{ background: "var(--light)", borderRadius: "12px", padding: "1.5rem", maxWidth: "580px", margin: "0 auto 2rem", textAlign: "left", border: "1px solid var(--border)" }}>
+          <div style={{ fontSize: "0.82rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--muted)", marginBottom: "1rem" }}>
+            Institutional Exam Timing & Policy
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem", fontSize: "0.92rem" }}>
+            <span style={{ color: "var(--muted)" }}>Candidate Login Status:</span>
+            <strong style={{ color: isAwaitingApproval ? "#B45309" : "var(--success)" }}>
+              {isAwaitingApproval ? "⏳ Pending Approval" : "✅ Approved"}
             </strong>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem" }}>
-            <span style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Minimum Exam Time:</span>
-            <strong>{minDur} Minutes (Submission Locked Before)</strong>
+
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem", fontSize: "0.92rem" }}>
+            <span style={{ color: "var(--muted)" }}>Exam Start Permission:</span>
+            <strong style={{ color: isStartPermitted ? "var(--success)" : "#7C3AED" }}>
+              {isStartPermitted ? "🟢 Permitted (Live)" : "⏸️ Waiting Invigilator Start"}
+            </strong>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem" }}>
-            <span style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Maximum Exam Time:</span>
-            <strong>{maxDur} Minutes (Auto-Submit on Expiry)</strong>
+
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem", fontSize: "0.92rem" }}>
+            <span style={{ color: "var(--muted)" }}>Total Exam Duration:</span>
+            <strong>{maxDur} Minutes (Auto-submit on expiry)</strong>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
-            <span style={{ color: "var(--muted)", fontSize: "0.9rem" }}>Proctoring Engine:</span>
-            <strong style={{ color: "var(--primary)" }}>Active & Standby</strong>
+
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "0.6rem", fontSize: "0.92rem" }}>
+            <span style={{ color: "var(--muted)" }}>Compulsory Minimum Time:</span>
+            <strong style={{ color: "#B45309" }}>{minDur} Minutes (Submission Locked Before)</strong>
+          </div>
+
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.92rem", paddingTop: "0.5rem", borderTop: "1px dashed var(--border)" }}>
+            <span style={{ color: "var(--muted)" }}>Proctoring Engine:</span>
+            <strong style={{ color: "var(--primary)" }}>Active & Standby (Max 3 Warnings)</strong>
           </div>
         </div>
 
-        {/* Action Buttons */}
-        {isApproved ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
+        {/* Enter Exam or Wait */}
+        {canEnterExam ? (
+          <div>
             <Link
               className="btn btn-primary btn-lg"
               href={`/student/exams/${id}/attempt`}
               style={{
-                padding: "1rem 2.8rem",
-                fontSize: "1.18rem",
-                fontWeight: 700,
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.65rem",
-                background: "#16A34A",
-                borderColor: "#16A34A",
-                color: "#FFFFFF",
-                boxShadow: "0 6px 20px rgba(22, 163, 74, 0.35)",
-                borderRadius: "10px",
-                textDecoration: "none",
+                padding: "1rem 2.75rem",
+                fontSize: "1.15rem",
+                boxShadow: "0 4px 14px rgba(27, 42, 74, 0.25)",
               }}
             >
-              <span>Enter Live Examination</span>
-              <span style={{ fontSize: "1.35rem", lineHeight: 1 }}>&rarr;</span>
+              Enter Live Examination &rarr;
             </Link>
-            <p style={{ fontSize: "0.84rem", color: "var(--muted)", margin: 0 }}>
-              Entering will switch to full-screen mode. Have your workspace clear and webcam visible.
-            </p>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "1rem" }}>
             <p style={{ fontSize: "0.88rem", color: "var(--muted)", margin: 0 }}>
-              Listening for server approval broadcast… (Auto-refreshes every 2.5s)
+              Listening for server start broadcast… (Auto-refreshes every 3s)
             </p>
-            <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: "0.75rem" }}>
-              <button
-                type="button"
-                className="btn btn-primary btn-sm"
-                onClick={simulateApprove}
-                disabled={approving}
-                style={{ fontWeight: 600, padding: "0.5rem 1.25rem" }}
-              >
-                {approving ? "Approving..." : "⚡ Quick Demo: Staff / Admin Instant Approve"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={simulateStart}
-                disabled={starting}
-                style={{ fontSize: "0.82rem" }}
-              >
-                {starting ? "Starting..." : "⚡ Quick Demo: Broadcast Batch Start"}
-              </button>
-            </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={simulateStart}
+              disabled={starting || isAwaitingApproval}
+              title="Convenience trigger for demonstration & automated testing"
+            >
+              {starting ? "Starting..." : "⚡ Quick Demo: Grant Start Permission & Begin"}
+            </button>
           </div>
         )}
       </div>
     </div>
   );
 }
-

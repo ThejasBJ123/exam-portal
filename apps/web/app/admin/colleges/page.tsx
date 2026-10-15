@@ -32,6 +32,7 @@ export default function CollegesPage() {
   const [timingMinDuration, setTimingMinDuration] = useState(30);
   const [timingMaxDuration, setTimingMaxDuration] = useState(60);
   const [timingRequireLoginApproval, setTimingRequireLoginApproval] = useState(true);
+  const [timingExamStarted, setTimingExamStarted] = useState(true);
   const [timingExamConfigs, setTimingExamConfigs] = useState<Record<string, { minDurationMinutes: number; maxDurationMinutes: number; requireLoginApproval?: boolean }>>({});
 
   // Student Login Approvals state
@@ -298,9 +299,27 @@ export default function CollegesPage() {
     setTimingMinDuration(college.minDurationMinutes ?? 30);
     setTimingMaxDuration(college.maxDurationMinutes ?? 60);
     setTimingRequireLoginApproval(college.requireLoginApproval ?? true);
+    setTimingExamStarted(college.examStarted ?? true);
     setTimingExamConfigs(college.examConfigs ?? {});
     setErrorMessage("");
     setShowTimingModal(true);
+  }
+
+  async function handleToggleExamStartPermission(college: CollegeWithMeta) {
+    try {
+      setErrorMessage("");
+      const res: any = await api(`/colleges/${college.id}/toggle-start`, { method: "POST" });
+      const isStarted = Boolean(res?.examStarted);
+      setMessage(
+        isStarted
+          ? `🚀 Live Exam Start Permission GRANTED for ${college.name}! Candidates can now proceed from the lobby into their exam session.`
+          : `⏸️ Exam Start Permission PAUSED for ${college.name}. Candidates will wait in the lobby until authorized.`
+      );
+      await loadData();
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      setErrorMessage(err instanceof ApiError ? err.message : err.message || "Failed to update exam start permission.");
+    }
   }
 
   async function handleSaveTimingSettings(e: FormEvent<HTMLFormElement>) {
@@ -330,11 +349,12 @@ export default function CollegesPage() {
           minDurationMinutes: Number(timingMinDuration),
           maxDurationMinutes: Number(timingMaxDuration),
           requireLoginApproval: Boolean(timingRequireLoginApproval),
+          examStarted: Boolean(timingExamStarted),
           examConfigs: timingExamConfigs,
         }),
       });
 
-      setMessage(`Timing and login approval policy updated successfully for ${selectedCollege.name} (Min: ${timingMinDuration}m, Max: ${timingMaxDuration}m)!`);
+      setMessage(`Timing and exam start policy updated successfully for ${selectedCollege.name} (Min: ${timingMinDuration}m, Max: ${timingMaxDuration}m, Start Permission: ${timingExamStarted ? "GRANTED" : "LOCKED"})!`);
       setShowTimingModal(false);
       await loadData();
       setTimeout(() => setMessage(""), 5000);
@@ -401,29 +421,13 @@ export default function CollegesPage() {
         method: "POST",
         body: JSON.stringify({ studentId }),
       });
-      setApprovalMessage("Student login approval turned OFF (reset to Pending).");
+      setApprovalMessage("Student login approval revoked (reset to Pending).");
       const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
       setCollegeStudents(updated);
       await loadData();
       setTimeout(() => setApprovalMessage(""), 4000);
     } catch (err: any) {
-      setErrorMessage(err.message || "Failed to turn OFF student approval.");
-    }
-  }
-
-  async function handleRevokeAllStudents() {
-    if (!approvalsCollege) return;
-    try {
-      const res = await api<{ revokedCount: number }>(`/colleges/${approvalsCollege.id}/revoke-all-students`, {
-        method: "POST",
-      });
-      setApprovalMessage(`Successfully turned OFF approval for all ${res.revokedCount || 0} candidate logins!`);
-      const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
-      setCollegeStudents(updated);
-      await loadData();
-      setTimeout(() => setApprovalMessage(""), 4000);
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to turn OFF all student approvals.");
+      setErrorMessage(err.message || "Failed to revoke student approval.");
     }
   }
 
@@ -792,6 +796,7 @@ export default function CollegesPage() {
                   <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>Unique College Code</th>
                   <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>Exam Duration Window</th>
                   <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Login Approval</th>
+                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Exam Start Permission</th>
                   <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>Assigned Question Papers</th>
                   <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Students</th>
                   <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Status</th>
@@ -944,6 +949,68 @@ export default function CollegesPage() {
                             <span>⚡</span> Instant Auto-Entry
                           </span>
                         )}
+                      </td>
+
+                      {/* Official Exam Start Permission Gatekeeper */}
+                      <td style={{ padding: "1rem", textAlign: "center", whiteSpace: "nowrap" }}>
+                        <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: "0.35rem" }}>
+                          {college.examStarted ?? true ? (
+                            <span
+                              className="chip"
+                              style={{
+                                background: "#DCFCE7",
+                                color: "#166534",
+                                border: "1px solid #86EFAC",
+                                fontSize: "0.74rem",
+                                fontWeight: 700,
+                                padding: "0.22rem 0.55rem",
+                                borderRadius: "12px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "0.3rem",
+                              }}
+                              title="Exam start permission is GRANTED. Candidates can enter live exam."
+                            >
+                              <span>🟢</span> PERMITTED (LIVE)
+                            </span>
+                          ) : (
+                            <span
+                              className="chip"
+                              style={{
+                                background: "#FEF3C7",
+                                color: "#B45309",
+                                border: "1px solid #FCD34D",
+                                fontSize: "0.74rem",
+                                fontWeight: 700,
+                                padding: "0.22rem 0.55rem",
+                                borderRadius: "12px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "0.3rem",
+                              }}
+                              title="Exam start permission is PAUSED. Candidates held in lobby."
+                            >
+                              <span>⏸️</span> WAITING PERMISSION
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleExamStartPermission(college)}
+                            className="btn btn-outline btn-sm"
+                            style={{
+                              fontSize: "0.7rem",
+                              padding: "0.15rem 0.45rem",
+                              fontWeight: 700,
+                              borderColor: (college.examStarted ?? true) ? "#FCA5A5" : "#86EFAC",
+                              color: (college.examStarted ?? true) ? "#B91C1C" : "#166534",
+                              background: (college.examStarted ?? true) ? "#FEF2F2" : "#F0FDF4",
+                              cursor: "pointer",
+                            }}
+                            title={(college.examStarted ?? true) ? "Click to revoke start permission (hold students in lobby)" : "Click to grant start permission (allow students to enter exam)"}
+                          >
+                            {(college.examStarted ?? true) ? "⏸️ Pause Start" : "🚀 Grant Start"}
+                          </button>
+                        </div>
                       </td>
 
                       {/* Assigned Question Papers */}
@@ -2039,7 +2106,7 @@ export default function CollegesPage() {
                   border: timingRequireLoginApproval ? "1px solid #BBF7D0" : "1px solid #FDE68A",
                   borderRadius: "8px",
                   padding: "1rem",
-                  marginBottom: "1.25rem",
+                  marginBottom: "1rem",
                 }}
               >
                 <label style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", cursor: "pointer" }}>
@@ -2055,6 +2122,38 @@ export default function CollegesPage() {
                     </strong>
                     <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: timingRequireLoginApproval ? "#15803D" : "#B45309", lineHeight: 1.45 }}>
                       When enabled, newly registered or logged-in candidates under this college remain in <em>Pending Approval</em> state. They cannot start an examination session until an Admin or Staff invigilator approves their login.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
+              {/* Official Exam Start Permission (Admin/Staff Gatekeeper) */}
+              <div
+                style={{
+                  background: timingExamStarted ? "#ECFDF5" : "#FFFBEB",
+                  border: timingExamStarted ? "1.5px solid #10B981" : "1.5px solid #FCD34D",
+                  borderRadius: "8px",
+                  padding: "1rem",
+                  marginBottom: "1.25rem",
+                }}
+              >
+                <label style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={timingExamStarted}
+                    onChange={(e) => setTimingExamStarted(e.target.checked)}
+                    style={{ marginTop: "0.25rem", width: 18, height: 18 }}
+                  />
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      <strong style={{ fontSize: "0.92rem", color: timingExamStarted ? "#065F46" : "#92400E" }}>
+                        {timingExamStarted ? "🟢 Official Exam Start Permission: GRANTED (Exam Is Live)" : "⏸️ Official Exam Start Permission: LOCKED (Holding in Lobby)"}
+                      </strong>
+                    </div>
+                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: timingExamStarted ? "#047857" : "#78350F", lineHeight: 1.45 }}>
+                      {timingExamStarted
+                        ? "Exam start permission is active on the server. Candidates who complete readiness & login verification can immediately click 'Enter Live Examination' to begin."
+                        : "Candidates are held in the waiting lobby until an Administrator or Staff invigilator grants start permission. Candidates cannot begin their exam."}
                     </p>
                   </div>
                 </label>
@@ -2218,26 +2317,8 @@ export default function CollegesPage() {
                     fontSize: "0.8rem",
                     padding: "0.35rem 0.75rem",
                   }}
-                  title="Turn ON approval for all pending students"
                 >
-                  ✓ Turn ALL ON ({collegeStudents.filter((s) => !s.loginApproved).length})
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={handleRevokeAllStudents}
-                  disabled={collegeStudents.filter((s) => s.loginApproved).length === 0}
-                  style={{
-                    background: "#FEF2F2",
-                    color: "#DC2626",
-                    border: "1px solid #FCA5A5",
-                    fontWeight: 700,
-                    fontSize: "0.8rem",
-                    padding: "0.35rem 0.75rem",
-                  }}
-                  title="Turn OFF approval for all students"
-                >
-                  ✕ Turn ALL OFF ({collegeStudents.filter((s) => s.loginApproved).length})
+                  ✓ Approve All Pending ({collegeStudents.filter((s) => !s.loginApproved).length})
                 </button>
               </div>
             </div>
@@ -2259,7 +2340,7 @@ export default function CollegesPage() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", maxHeight: 400, overflowY: "auto" }}>
                 {collegeStudents.map((student) => {
-                  const isApproved = Boolean(student.loginApproved);
+                  const isApproved = student.loginApproved;
                   return (
                     <div
                       key={student.id}
@@ -2306,7 +2387,7 @@ export default function CollegesPage() {
                                 color: isApproved ? "#166534" : "#991B1B",
                               }}
                             >
-                              {isApproved ? "✓ APPROVED (ON)" : "⏳ PENDING (OFF)"}
+                              {isApproved ? "✓ APPROVED" : "⏳ PENDING APPROVAL"}
                             </span>
                           </div>
                           <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.15rem" }}>
@@ -2315,69 +2396,16 @@ export default function CollegesPage() {
                         </div>
                       </div>
 
-                      {/* Interactive ON / OFF Switch and Actions */}
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
-                        <button
-                          type="button"
-                          onClick={() => (isApproved ? handleRevokeStudent(student.id) : handleApproveStudent(student.id))}
-                          style={{
-                            display: "inline-flex",
-                            alignItems: "center",
-                            gap: "0.5rem",
-                            background: isApproved ? "#ECFDF5" : "#F1F5F9",
-                            border: isApproved ? "1.5px solid #10B981" : "1.5px solid #CBD5E1",
-                            borderRadius: "9999px",
-                            padding: "3px 8px 3px 5px",
-                            cursor: "pointer",
-                            transition: "all 0.2s ease",
-                          }}
-                          title={isApproved ? "Approval is ON — Click to switch OFF (Revoke)" : "Approval is OFF — Click to switch ON (Approve)"}
-                        >
-                          <div
-                            style={{
-                              width: "34px",
-                              height: "18px",
-                              borderRadius: "9999px",
-                              background: isApproved ? "#16A34A" : "#94A3B8",
-                              position: "relative",
-                              transition: "background 0.2s ease",
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: "14px",
-                                height: "14px",
-                                borderRadius: "50%",
-                                background: "#FFFFFF",
-                                position: "absolute",
-                                top: "2px",
-                                left: isApproved ? "18px" : "2px",
-                                transition: "left 0.2s ease",
-                                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
-                              }}
-                            />
-                          </div>
-                          <span
-                            style={{
-                              fontSize: "0.75rem",
-                              fontWeight: 800,
-                              letterSpacing: "0.04em",
-                              color: isApproved ? "#15803D" : "#64748B",
-                            }}
-                          >
-                            {isApproved ? "ON" : "OFF"}
-                          </span>
-                        </button>
-
+                      <div style={{ display: "flex", gap: "0.4rem" }}>
                         {isApproved ? (
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
                             onClick={() => handleRevokeStudent(student.id)}
-                            style={{ fontSize: "0.75rem", color: "#DC2626", borderColor: "#FCA5A5", padding: "0.25rem 0.55rem" }}
-                            title="Turn OFF approval for this student"
+                            style={{ fontSize: "0.75rem", color: "#DC2626", borderColor: "#FCA5A5" }}
+                            title="Revoke login approval"
                           >
-                            Turn OFF
+                            Revoke Approval
                           </button>
                         ) : (
                           <button
@@ -2385,15 +2413,13 @@ export default function CollegesPage() {
                             className="btn btn-primary btn-sm"
                             onClick={() => handleApproveStudent(student.id)}
                             style={{
-                              fontSize: "0.75rem",
+                              fontSize: "0.78rem",
                               fontWeight: 700,
                               background: "#059669",
                               borderColor: "#059669",
-                              padding: "0.25rem 0.65rem",
                             }}
-                            title="Turn ON approval for this student"
                           >
-                            Turn ON
+                            ✓ Approve Login
                           </button>
                         )}
                       </div>

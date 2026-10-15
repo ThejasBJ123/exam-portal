@@ -10,11 +10,14 @@ type Exam = {
   title: string;
   status: string;
   durationMinutes: number;
+  minDurationMinutes?: number;
   passPercent?: number;
   kind: string;
   accessCode?: string;
   description?: string;
   totalQuestions?: number;
+  isLive?: boolean;
+  startedAt?: string | null;
 };
 
 export default function ExamsPage() {
@@ -29,10 +32,16 @@ export default function ExamsPage() {
   const [newTitle, setNewTitle] = useState("");
   const [newKind, setNewKind] = useState("APTITUDE");
   const [newAccessCode, setNewAccessCode] = useState("");
-  const [newDuration, setNewDuration] = useState(30);
+  const [newDuration, setNewDuration] = useState(60);
+  const [newMinDuration, setNewMinDuration] = useState(30);
   const [newPassPercent, setNewPassPercent] = useState(50);
   const [newDescription, setNewDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  // Timing Modal State
+  const [timingModalExam, setTimingModalExam] = useState<Exam | null>(null);
+  const [editDuration, setEditDuration] = useState(60);
+  const [editMinDuration, setEditMinDuration] = useState(30);
 
   async function load() {
     try {
@@ -64,13 +73,16 @@ export default function ExamsPage() {
     setSubmitting(true);
     try {
       const cleanCode = (newAccessCode || generateFreshCode()).toUpperCase().trim();
+      const dur = Number(newDuration) || 60;
+      const minDur = Number(newMinDuration) > 0 ? Number(newMinDuration) : Math.min(dur, 30);
       const res: any = await api("/exams", {
         method: "POST",
         body: JSON.stringify({
           title: newTitle.trim(),
           kind: newKind,
           accessCode: cleanCode,
-          durationMinutes: Number(newDuration) || 30,
+          durationMinutes: dur,
+          minDurationMinutes: minDur,
           passPercent: Number(newPassPercent) || 50,
           description: newDescription.trim(),
         }),
@@ -82,7 +94,7 @@ export default function ExamsPage() {
         code: cleanCode,
       });
 
-      setMessage(`Examination '${newTitle}' successfully configured with Candidate Access Code '${cleanCode}'.`);
+      setMessage(`Examination '${newTitle}' configured with Code '${cleanCode}' (Duration: ${dur}m, Min Limit: ${minDur}m).`);
       setShowBuilder(false);
       setNewTitle("");
       setNewDescription("");
@@ -92,6 +104,48 @@ export default function ExamsPage() {
       setMessage("Error creating examination.");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function toggleExamLive(exam: Exam) {
+    try {
+      const res: any = await api(`/exams/${exam.id}/toggle-live`, { method: "POST" });
+      const isLive = res?.isLive;
+      setMessage(
+        isLive
+          ? `🚀 Live Examination Batch Started & Authorized for '${exam.title}'! Official countdown is ticking.`
+          : `⏸️ Examination Batch Paused for '${exam.title}'. Candidates are held in waiting lobby.`
+      );
+      await load();
+      setTimeout(() => setMessage(""), 5000);
+    } catch {
+      setMessage("Failed to update exam live status.");
+    }
+  }
+
+  function handleOpenTimingModal(exam: Exam) {
+    setTimingModalExam(exam);
+    setEditDuration(exam.durationMinutes || 60);
+    setEditMinDuration(exam.minDurationMinutes || Math.min(exam.durationMinutes || 60, 30));
+  }
+
+  async function saveExamTiming(e: FormEvent) {
+    e.preventDefault();
+    if (!timingModalExam) return;
+    try {
+      await api(`/exams/${timingModalExam.id}/timing`, {
+        method: "POST",
+        body: JSON.stringify({
+          durationMinutes: Number(editDuration),
+          minDurationMinutes: Number(editMinDuration),
+        }),
+      });
+      setMessage(`Timing policy updated for '${timingModalExam.title}': Max ${editDuration}m, Min compulsory ${editMinDuration}m.`);
+      setTimingModalExam(null);
+      await load();
+      setTimeout(() => setMessage(""), 5000);
+    } catch {
+      setMessage("Failed to update exam timing.");
     }
   }
 
@@ -362,15 +416,37 @@ export default function ExamsPage() {
             </div>
 
             <div className="field">
-              <label>Duration (Minutes) *</label>
+              <label>Total Exam Duration (Minutes) *</label>
               <input
                 type="number"
                 min={10}
                 max={240}
                 value={newDuration}
-                onChange={(e) => setNewDuration(Number(e.target.value))}
+                onChange={(e) => {
+                  const d = Number(e.target.value);
+                  setNewDuration(d);
+                  if (newMinDuration > d) setNewMinDuration(Math.min(d, 30));
+                }}
                 required
               />
+              <span style={{ fontSize: "0.74rem", color: "var(--muted)", display: "block", marginTop: "0.2rem" }}>
+                Auto-submits strictly at {newDuration} minutes
+              </span>
+            </div>
+
+            <div className="field">
+              <label>Minimum Attendance Time Limit (Minutes) *</label>
+              <input
+                type="number"
+                min={1}
+                max={newDuration}
+                value={newMinDuration}
+                onChange={(e) => setNewMinDuration(Math.min(newDuration, Math.max(1, Number(e.target.value))))}
+                required
+              />
+              <span style={{ fontSize: "0.74rem", color: "#B45309", display: "block", marginTop: "0.2rem" }}>
+                🔒 Compulsory attendance: candidate cannot submit before {newMinDuration} minutes
+              </span>
             </div>
 
             <div className="field">
@@ -525,31 +601,93 @@ export default function ExamsPage() {
 
                   {/* Duration & Passing */}
                   <td>
-                    <div style={{ fontWeight: 700, fontSize: "0.88rem" }}>
-                      ⏱️ {e.durationMinutes} Minutes
+                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#1E3A8A" }}>
+                      ⏱️ {e.durationMinutes} Mins (Total)
                     </div>
-                    <div style={{ fontSize: "0.75rem", color: "var(--muted)", marginTop: "0.15rem" }}>
+                    <div style={{ fontSize: "0.76rem", color: "#B45309", fontWeight: 700, marginTop: "0.2rem" }}>
+                      🔒 Min Limit: {e.minDurationMinutes ?? Math.min(e.durationMinutes, 30)} Mins
+                    </div>
+                    <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "0.15rem" }}>
                       Passing: {e.passPercent ?? 50}% • {e.totalQuestions ?? 4} MCQs
                     </div>
                   </td>
 
-                  {/* Status */}
+                  {/* Status & Live Start Permission */}
                   <td>
-                    <span
-                      className={`chip ${e.status === "PUBLISHED" ? "chip-success" : "chip-neutral"}`}
-                      style={{ fontWeight: 700, fontSize: "0.75rem" }}
-                    >
-                      {e.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT"}
-                    </span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                      <span
+                        className={`chip ${e.status === "PUBLISHED" ? "chip-success" : "chip-neutral"}`}
+                        style={{ fontWeight: 700, fontSize: "0.72rem" }}
+                      >
+                        {e.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT"}
+                      </span>
+                      {e.isLive ?? true ? (
+                        <span
+                          className="chip"
+                          style={{
+                            background: "#DCFCE7",
+                            color: "#166534",
+                            border: "1px solid #86EFAC",
+                            fontSize: "0.7rem",
+                            padding: "0.15rem 0.45rem",
+                            fontWeight: 700,
+                          }}
+                        >
+                          🟢 LIVE BATCH
+                        </span>
+                      ) : (
+                        <span
+                          className="chip"
+                          style={{
+                            background: "#FEF3C7",
+                            color: "#B45309",
+                            border: "1px solid #FCD34D",
+                            fontSize: "0.7rem",
+                            padding: "0.15rem 0.45rem",
+                            fontWeight: 700,
+                          }}
+                        >
+                          ⏸️ WAITING
+                        </span>
+                      )}
+                    </div>
                   </td>
 
                   {/* Management Actions */}
                   <td style={{ textAlign: "right" }}>
-                    <div style={{ display: "inline-flex", gap: "0.4rem", alignItems: "center", justifyContent: "flex-end" }}>
+                    <div style={{ display: "inline-flex", gap: "0.35rem", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        style={{
+                          fontSize: "0.75rem",
+                          fontWeight: 700,
+                          padding: "0.22rem 0.5rem",
+                          borderColor: (e.isLive ?? true) ? "#FCA5A5" : "#86EFAC",
+                          color: (e.isLive ?? true) ? "#B91C1C" : "#166534",
+                          background: (e.isLive ?? true) ? "#FEF2F2" : "#F0FDF4",
+                          cursor: "pointer",
+                        }}
+                        onClick={() => toggleExamLive(e)}
+                        title={(e.isLive ?? true) ? "Click to pause exam batch" : "Click to grant permission and start live batch"}
+                      >
+                        {(e.isLive ?? true) ? "⏸️ Pause Batch" : "🚀 Start Batch"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        style={{ fontSize: "0.75rem", padding: "0.22rem 0.5rem", color: "#1E40AF", borderColor: "#BFDBFE", background: "#EFF6FF", fontWeight: 600 }}
+                        onClick={() => handleOpenTimingModal(e)}
+                        title="Configure total duration and minimum attendance time limit"
+                      >
+                        ⏱️ Timing
+                      </button>
+
                       <Link
                         href={`/admin/questions/${e.id}`}
                         className="btn btn-primary btn-sm"
-                        style={{ fontSize: "0.78rem", textDecoration: "none", fontWeight: 700 }}
+                        style={{ fontSize: "0.75rem", textDecoration: "none", fontWeight: 700, padding: "0.22rem 0.5rem" }}
                         title="Open Questions for this assessment"
                       >
                         📂 Questions
@@ -558,7 +696,7 @@ export default function ExamsPage() {
                       <Link
                         href="/admin/monitoring"
                         className="btn btn-outline btn-sm"
-                        style={{ fontSize: "0.78rem", textDecoration: "none" }}
+                        style={{ fontSize: "0.75rem", textDecoration: "none", padding: "0.22rem 0.5rem" }}
                         title="Live Monitor"
                       >
                         👁️ Monitor
@@ -568,7 +706,7 @@ export default function ExamsPage() {
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm"
-                          style={{ color: "#EF4444", fontSize: "0.85rem", padding: "0.25rem 0.5rem" }}
+                          style={{ color: "#EF4444", fontSize: "0.85rem", padding: "0.2rem 0.4rem" }}
                           onClick={() => deleteExam(e.id, e.title)}
                           title="Delete examination"
                         >
@@ -591,6 +729,165 @@ export default function ExamsPage() {
           </table>
         </div>
       </div>
+
+      {/* TIMING CONFIGURATION MODAL */}
+      {timingModalExam && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(15, 23, 42, 0.65)",
+            backdropFilter: "blur(4px)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1rem",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: 540,
+              width: "100%",
+              padding: "2rem",
+              background: "#FFFFFF",
+              borderRadius: "14px",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
+              <div>
+                <h3 style={{ margin: 0, color: "#1E3A8A", fontSize: "1.25rem" }}>
+                  ⏱️ Configure Exam Timing Policy
+                </h3>
+                <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
+                  Assessment: <strong>{timingModalExam.title}</strong>
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setTimingModalExam(null)}
+                style={{ fontSize: "1.1rem" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={saveExamTiming}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.25rem" }}>
+                <div>
+                  <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 700, color: "#1E293B", marginBottom: "0.3rem" }}>
+                    Total Exam Duration (Mins) *
+                  </label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={360}
+                    required
+                    value={editDuration}
+                    onChange={(e) => {
+                      const d = Number(e.target.value);
+                      setEditDuration(d);
+                      if (editMinDuration > d) setEditMinDuration(Math.min(d, 30));
+                    }}
+                    style={{ width: "100%", padding: "0.55rem 0.75rem", fontSize: "0.95rem", fontWeight: 600 }}
+                  />
+                  <span style={{ fontSize: "0.72rem", color: "var(--muted)", display: "block", marginTop: "0.25rem" }}>
+                    Auto-submits strictly at {editDuration}m
+                  </span>
+                </div>
+
+                <div>
+                  <label style={{ display: "block", fontSize: "0.85rem", fontWeight: 700, color: "#1E293B", marginBottom: "0.3rem" }}>
+                    Minimum Time Limit (Mins) *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={editDuration}
+                    required
+                    value={editMinDuration}
+                    onChange={(e) => setEditMinDuration(Math.min(editDuration, Math.max(1, Number(e.target.value))))}
+                    style={{ width: "100%", padding: "0.55rem 0.75rem", fontSize: "0.95rem", fontWeight: 600 }}
+                  />
+                  <span style={{ fontSize: "0.72rem", color: "#B45309", display: "block", marginTop: "0.25rem" }}>
+                    🔒 Candidate cannot submit before {editMinDuration}m
+                  </span>
+                </div>
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div style={{ marginBottom: "1.25rem" }}>
+                <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#475569", display: "block", marginBottom: "0.4rem" }}>
+                  Quick Presets:
+                </span>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+                  {[
+                    { label: "1 Hour Exam (30m Min / 60m Max)", min: 30, max: 60 },
+                    { label: "90 Mins (45m Min / 90m Max)", min: 45, max: 90 },
+                    { label: "2 Hours (60m Min / 120m Max)", min: 60, max: 120 },
+                    { label: "30 Mins Quiz (15m Min / 30m Max)", min: 15, max: 30 },
+                    { label: "15 Mins Test (5m Min / 15m Max)", min: 5, max: 15 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => {
+                        setEditMinDuration(preset.min);
+                        setEditDuration(preset.max);
+                      }}
+                      className="btn btn-outline btn-sm"
+                      style={{
+                        fontSize: "0.75rem",
+                        padding: "0.25rem 0.55rem",
+                        background: editDuration === preset.max && editMinDuration === preset.min ? "#1E40AF" : "#F8FAFC",
+                        color: editDuration === preset.max && editMinDuration === preset.min ? "white" : "#1E40AF",
+                        borderColor: "#93C5FD",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  background: "#EFF6FF",
+                  border: "1px solid #BFDBFE",
+                  borderRadius: "8px",
+                  padding: "0.85rem",
+                  fontSize: "0.82rem",
+                  color: "#1E40AF",
+                  marginBottom: "1.5rem",
+                  lineHeight: 1.45,
+                }}
+              >
+                <strong>Policy Enforcement:</strong> Candidates are strictly locked from submitting their answers until at least <strong>{editMinDuration} minutes</strong> have elapsed from their start time. Once the <strong>{editDuration} minute</strong> timer expires, answers will auto-submit automatically.
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setTimingModalExam(null)}
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" style={{ fontWeight: 700 }}>
+                  Save Timing Policy
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </PortalShell>
   );
 }

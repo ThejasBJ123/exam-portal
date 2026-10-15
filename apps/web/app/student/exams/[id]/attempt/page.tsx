@@ -1500,13 +1500,25 @@ export default function AttemptPage() {
                 className="btn btn-success"
                 onClick={() => setShowSubmitModal(true)}
                 style={{
-                  background: "linear-gradient(135deg, #10B981, #059669)",
+                  background: !minDurationStatus.isSatisfied ? "#475569" : "linear-gradient(135deg, #10B981, #059669)",
                   color: "#FFFFFF",
                   fontWeight: 700,
-                  boxShadow: "0 2px 10px rgba(16, 185, 129, 0.4)",
+                  boxShadow: !minDurationStatus.isSatisfied ? "none" : "0 2px 10px rgba(16, 185, 129, 0.4)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  cursor: "pointer",
                 }}
+                title={!minDurationStatus.isSatisfied ? `Submission locked until ${minDurationStatus.minMinutes} minutes have elapsed (${minDurationStatus.remainingDisplay} remaining)` : "Submit your exam"}
               >
-                Submit Examination &rarr;
+                {!minDurationStatus.isSatisfied ? (
+                  <>
+                    <span>🔒</span>
+                    <span>Submit Locked ({minDurationStatus.remainingDisplay})</span>
+                  </>
+                ) : (
+                  <span>Submit Examination &rarr;</span>
+                )}
               </button>
             ) : (
               <button
