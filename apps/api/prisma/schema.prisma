@@ -1,0 +1,460 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  MASTER_ADMIN
+  STAFF
+  STUDENT
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum ExamStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum ExamRunStatus {
+  SCHEDULED
+  LIVE
+  CLOSED
+}
+
+enum SessionStatus {
+  PENDING
+  READY
+  IN_PROGRESS
+  SUBMITTED
+  TIMED_OUT
+  VOIDED
+}
+
+enum QuestionType {
+  SINGLE_MCQ
+  MULTI_SELECT
+  NUMERICAL
+  SHORT_TEXT
+  CODING
+}
+
+enum AssessmentKind {
+  APTITUDE
+  TECHNICAL_MCQ
+  CODING
+  MIXED
+}
+
+enum ResultStatus {
+  PENDING
+  REVIEW
+  APPROVED
+  PUBLISHED
+}
+
+enum IncidentStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  DISMISSED
+}
+
+enum WarningSequence {
+  FIRST
+  SECOND
+  THIRD
+}
+
+enum ReviewDecision {
+  PENDING
+  UPHOLD
+  OVERRIDE
+  APPEAL_ACCEPTED
+}
+
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  fullName     String
+  role         Role
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  studentProfile StudentProfile?
+  staffProfile   StaffProfile?
+  auditLogs      AuditLog[]
+}
+
+model StudentProfile {
+  id        String  @id @default(uuid())
+  userId    String  @unique
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  batchId   String?
+  batch     CandidateBatch? @relation(fields: [batchId], references: [id])
+  rollNumber String?
+  phone     String?
+}
+
+model StaffProfile {
+  id           String @id @default(uuid())
+  userId       String @unique
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  designation  String?
+  examAssignments StaffExamAssignment[]
+}
+
+model CandidateBatch {
+  id        String           @id @default(uuid())
+  name      String
+  createdAt DateTime         @default(now())
+  students  StudentProfile[]
+  assignments ExamAssignment[]
+}
+
+model QuestionBank {
+  id          String     @id @default(uuid())
+  name        String
+  description String?
+  questions   Question[]
+}
+
+model Question {
+  id              String       @id @default(uuid())
+  bankId          String
+  bank            QuestionBank @relation(fields: [bankId], references: [id])
+  type            QuestionType
+  stem            String
+  marks           Decimal      @default(1)
+  negativeMarks   Decimal      @default(0)
+  difficulty      String?
+  language        String?
+  createdAt       DateTime     @default(now())
+  options         QuestionOption[]
+  versions        QuestionVersion[]
+  sectionQuestions SectionQuestion[]
+  testCases       TestCase[]
+}
+
+model QuestionOption {
+  id         String   @id @default(uuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  label      String
+  text       String
+  isCorrect  Boolean  @default(false)
+}
+
+model QuestionVersion {
+  id         String   @id @default(uuid())
+  questionId String
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  snapshot   Json
+  createdAt  DateTime @default(now())
+}
+
+model Exam {
+  id              String         @id @default(uuid())
+  title           String
+  kind            AssessmentKind
+  description     String?
+  durationMinutes Int
+  passPercent     Decimal        @default(40)
+  attemptLimit    Int            @default(1)
+  status          ExamStatus     @default(DRAFT)
+  publishedAt     DateTime?
+  frozenConfig    Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  sections        ExamSection[]
+  runs            ExamRun[]
+  assignments     ExamAssignment[]
+  staffAssignments StaffExamAssignment[]
+  warningPolicy   WarningPolicy?
+}
+
+model ExamSection {
+  id        String            @id @default(uuid())
+  examId    String
+  exam      Exam              @relation(fields: [examId], references: [id], onDelete: Cascade)
+  title     String
+  order     Int
+  kind      AssessmentKind
+  questions SectionQuestion[]
+}
+
+model SectionQuestion {
+  id         String      @id @default(uuid())
+  sectionId  String
+  section    ExamSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  questionId String
+  question   Question    @relation(fields: [questionId], references: [id])
+  order      Int
+  marks      Decimal
+}
+
+model WarningPolicy {
+  id                 String @id @default(uuid())
+  examId             String @unique
+  exam               Exam   @relation(fields: [examId], references: [id], onDelete: Cascade)
+  maxWarnings        Int    @default(3)
+  cooldownSeconds    Int    @default(20)
+  groupWindowSeconds Int    @default(8)
+  locked             Boolean @default(false)
+}
+
+model ExamRun {
+  id          String        @id @default(uuid())
+  examId      String
+  exam        Exam          @relation(fields: [examId], references: [id])
+  status      ExamRunStatus @default(SCHEDULED)
+  windowStart DateTime?
+  windowEnd   DateTime?
+  startedAt   DateTime?
+  startedById String?
+  sessions    ExamSession[]
+}
+
+model ExamAssignment {
+  id        String          @id @default(uuid())
+  examId    String
+  exam      Exam            @relation(fields: [examId], references: [id])
+  studentId String
+  batchId   String?
+  batch     CandidateBatch? @relation(fields: [batchId], references: [id])
+  createdAt DateTime        @default(now())
+
+  @@unique([examId, studentId])
+}
+
+model StaffExamAssignment {
+  id             String       @id @default(uuid())
+  examId         String
+  exam           Exam         @relation(fields: [examId], references: [id])
+  staffProfileId String
+  staffProfile   StaffProfile @relation(fields: [staffProfileId], references: [id])
+
+  @@unique([examId, staffProfileId])
+}
+
+model ExamSession {
+  id               String        @id @default(uuid())
+  examRunId        String
+  examRun          ExamRun       @relation(fields: [examRunId], references: [id])
+  studentId        String
+  status           SessionStatus @default(PENDING)
+  serverDeadlineAt DateTime?
+  startedAt        DateTime?
+  submittedAt      DateTime?
+  warningCount     Int           @default(0)
+  consentAt        DateTime?
+  readinessOk      Boolean       @default(false)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  answers      StudentAnswer[]
+  submission   Submission?
+  events       ProctoringEvent[]
+  warnings     WarningEvent[]
+  incidents    Incident[]
+  consent      ProctoringConsent?
+  score        Score?
+  result       Result?
+  questionOrder SessionQuestionOrder[]
+  codingSubs   CodingSubmission[]
+
+  @@unique([examRunId, studentId])
+  @@index([status])
+  @@index([serverDeadlineAt])
+}
+
+model SessionQuestionOrder {
+  id         String      @id @default(uuid())
+  sessionId  String
+  session    ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId String
+  order      Int
+}
+
+model StudentAnswer {
+  id          String      @id @default(uuid())
+  sessionId   String
+  session     ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId  String
+  payload     Json
+  frozen      Boolean     @default(false)
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([sessionId, questionId])
+}
+
+model Submission {
+  id          String      @id @default(uuid())
+  sessionId   String      @unique
+  session     ExamSession @relation(fields: [sessionId], references: [id])
+  submittedAt DateTime    @default(now())
+  reason      String
+}
+
+model ProctoringConsent {
+  id         String      @id @default(uuid())
+  sessionId  String      @unique
+  session    ExamSession @relation(fields: [sessionId], references: [id])
+  policyText String
+  acceptedAt DateTime    @default(now())
+}
+
+model ProctoringEvent {
+  id             String      @id @default(uuid())
+  sessionId      String
+  session        ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  type           String
+  confidence     Decimal?
+  detectorVersion String?
+  grouped        Boolean     @default(false)
+  technical      Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
+model WarningEvent {
+  id             String          @id @default(uuid())
+  sessionId      String
+  session        ExamSession     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sequence       WarningSequence
+  eventType      String
+  reason         String
+  acknowledgedAt DateTime?
+  staffNotified  Boolean         @default(false)
+  createdAt      DateTime        @default(now())
+}
+
+model Incident {
+  id         String         @id @default(uuid())
+  sessionId  String
+  session    ExamSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  summary    String
+  status     IncidentStatus @default(OPEN)
+  decision   ReviewDecision @default(PENDING)
+  staffNotes String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+}
+
+model TestCase {
+  id          String   @id @default(uuid())
+  questionId  String
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  input       String
+  expected    String
+  hidden      Boolean  @default(true)
+  weight      Decimal  @default(1)
+}
+
+model CodingSubmission {
+  id        String      @id @default(uuid())
+  sessionId String
+  session   ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  questionId String
+  language  String
+  source    String
+  createdAt DateTime    @default(now())
+  jobs      RunnerJob[]
+}
+
+model RunnerJob {
+  id           String           @id @default(uuid())
+  submissionId String
+  submission   CodingSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  status       String           @default("QUEUED")
+  createdAt    DateTime         @default(now())
+  result       RunnerResult?
+}
+
+model RunnerResult {
+  id        String    @id @default(uuid())
+  jobId     String    @unique
+  job       RunnerJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  passed    Int
+  failed    Int
+  output    Json
+  createdAt DateTime  @default(now())
+}
+
+model Score {
+  id          String      @id @default(uuid())
+  sessionId   String      @unique
+  session     ExamSession @relation(fields: [sessionId], references: [id])
+  objective   Decimal     @default(0)
+  coding      Decimal     @default(0)
+  total       Decimal     @default(0)
+  maxTotal    Decimal     @default(0)
+  scoredAt    DateTime    @default(now())
+}
+
+model Result {
+  id          String       @id @default(uuid())
+  sessionId   String       @unique
+  session     ExamSession  @relation(fields: [sessionId], references: [id])
+  status      ResultStatus @default(PENDING)
+  publishedAt DateTime?
+  reviews     ResultReview[]
+  publication ResultPublication?
+}
+
+model ResultReview {
+  id         String   @id @default(uuid())
+  resultId   String
+  result     Result   @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  reviewerId String
+  notes      String?
+  createdAt  DateTime @default(now())
+}
+
+model ResultPublication {
+  id         String   @id @default(uuid())
+  resultId   String   @unique
+  result     Result   @relation(fields: [resultId], references: [id], onDelete: Cascade)
+  approvedBy String
+  publishedAt DateTime @default(now())
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String
+  entity     String
+  entityId   String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model NotificationJob {
+  id        String   @id @default(uuid())
+  channel   String
+  payload   Json
+  status    String   @default("QUEUED")
+  createdAt DateTime @default(now())
+}
+
+model SystemHealthEvent {
+  id        String   @id @default(uuid())
+  kind      String
+  detail    Json?
+  createdAt DateTime @default(now())
+}
