@@ -245,10 +245,10 @@ export default function StudentLobbyPage() {
               type="button"
               className="btn btn-ghost btn-sm"
               onClick={simulateStart}
-              disabled={starting || isAwaitingApproval}
+              disabled={starting}
               title="Convenience trigger for demonstration & automated testing"
             >
-              {starting ? "Starting..." : "⚡ Quick Demo: Grant Start Permission & Begin"}
+              {starting ? "Authorizing Exam & Login..." : "⚡ Quick Demo: Authorize & Enter Now"}
             </button>
           </div>
         )}

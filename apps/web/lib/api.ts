@@ -1313,11 +1313,17 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     // GET /colleges or POST /colleges
     if (path === "/colleges" || path.startsWith("/colleges?")) {
       if (method === "GET") {
-        return store.colleges.map((c: any) => ({
-          ...c,
-          assignedPapers: (store.papers || []).filter((p: any) => (c.assignedPaperIds || []).includes(p.id)),
-          studentCount: (store.users || []).filter((u: any) => u.collegeCode && u.collegeCode.toUpperCase() === c.code.toUpperCase()).length,
-        }));
+        return store.colleges.map((c: any) => {
+          const matchingStudents = (store.users || []).filter((u: any) => u.role === "STUDENT" && u.collegeCode && u.collegeCode.toUpperCase() === c.code.toUpperCase());
+          const approvedStudents = matchingStudents.filter((u: any) => u.loginApproved === true);
+          return {
+            ...c,
+            assignedPapers: (store.papers || []).filter((p: any) => (c.assignedPaperIds || []).includes(p.id)),
+            studentCount: matchingStudents.length,
+            approvedStudentCount: approvedStudents.length,
+            pendingStudentCount: matchingStudents.length - approvedStudents.length,
+          };
+        });
       }
 
       if (method === "POST") {
@@ -1433,8 +1439,27 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
 
       targetCol.examStarted = !targetCol.examStarted;
       targetCol.examStartedAt = targetCol.examStarted ? new Date().toISOString() : null;
+      let approvedCount = 0;
       if (targetCol.examStarted) {
         store.exam.runs[0] = { id: "run-1", startedAt: targetCol.examStartedAt, status: "LIVE" };
+        // Auto-approve enrolled students for this college so they can enter without being held up
+        (store.users || []).forEach((u: any) => {
+          if (u.role === "STUDENT" && u.collegeCode && u.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
+            u.loginApproved = true;
+            u.approvalStatus = "APPROVED";
+            u.loginApprovedAt = targetCol.examStartedAt;
+            u.loginApprovedBy = store.currentUser?.email || "admin@kaizentrix.com";
+            const sess = getSessionForUser(store, u);
+            if (sess) {
+              sess.isLoginApproved = true;
+            }
+            approvedCount++;
+          }
+        });
+        if (store.currentUser && store.currentUser.collegeCode && store.currentUser.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
+          store.currentUser.loginApproved = true;
+          store.currentUser.approvalStatus = "APPROVED";
+        }
       }
 
       if (!store.auditLogs) store.auditLogs = [];
@@ -1445,12 +1470,13 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
         metadata: {
           examStarted: targetCol.examStarted,
           examStartedAt: targetCol.examStartedAt,
+          autoApprovedStudents: approvedCount,
         },
         createdAt: new Date().toISOString(),
         actor: { email: store.currentUser?.email || "admin@kaizentrix.com" },
       });
       saveStore(store);
-      return { ok: true, examStarted: targetCol.examStarted, examStartedAt: targetCol.examStartedAt, college: targetCol };
+      return { ok: true, examStarted: targetCol.examStarted, examStartedAt: targetCol.examStartedAt, approvedCount, college: targetCol };
     }
 
     // Specific College operations: /colleges/:id/students (List candidates enrolled for this college)
@@ -1488,6 +1514,10 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       if (curSess) {
         curSess.isLoginApproved = true;
       }
+      if (store.currentUser && (store.currentUser.id === student.id || store.currentUser.phone === student.phone)) {
+        store.currentUser.loginApproved = true;
+        store.currentUser.approvalStatus = "APPROVED";
+      }
 
       if (!store.auditLogs) store.auditLogs = [];
       store.auditLogs.unshift({
@@ -1520,6 +1550,10 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
           approvedCount++;
         }
       });
+      if (store.currentUser && store.currentUser.collegeCode && store.currentUser.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
+        store.currentUser.loginApproved = true;
+        store.currentUser.approvalStatus = "APPROVED";
+      }
 
       if (!store.auditLogs) store.auditLogs = [];
       store.auditLogs.unshift({
@@ -1533,6 +1567,7 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       saveStore(store);
       return { ok: true, approvedCount };
     }
+
 
     // Specific College operations: /colleges/:id/revoke-student
     if (path.includes("/revoke-student") && method === "POST") {
@@ -2134,6 +2169,21 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
         p.startedAt = nowIso;
       });
     }
+    if (store.users) {
+      store.users.forEach((u: any) => {
+        if (u.role === "STUDENT") {
+          u.loginApproved = true;
+          u.approvalStatus = "APPROVED";
+        }
+      });
+    }
+    if (store.currentUser && store.currentUser.role === "STUDENT") {
+      store.currentUser.loginApproved = true;
+      store.currentUser.approvalStatus = "APPROVED";
+    }
+    if (store.session) {
+      store.session.isLoginApproved = true;
+    }
     store.session.status = "READY";
     store.session.serverDeadlineAt = new Date(Date.now() + (store.exam.durationMinutes || 60) * 60 * 1000).toISOString();
     saveStore(store);
@@ -2293,7 +2343,12 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     const minDur = (college?.examConfigs?.[activePaper.id]?.minDurationMinutes) ?? college?.minDurationMinutes ?? activePaper.minDurationMinutes ?? 30;
     const maxDur = (college?.examConfigs?.[activePaper.id]?.maxDurationMinutes) ?? college?.maxDurationMinutes ?? (activePaper.durationMinutes || 60);
     const requireApproval = (college?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? college?.requireLoginApproval ?? true;
-    const isApproved = curUser?.loginApproved ?? !requireApproval;
+    const userInStore = (store.users || []).find((u: any) => u.id === curUser?.id || (u.phone && u.phone === curUser?.phone));
+    const isApproved = userInStore?.loginApproved ?? curUser?.loginApproved ?? !requireApproval;
+    if (curUser && isApproved && !curUser.loginApproved) {
+      curUser.loginApproved = true;
+      curUser.approvalStatus = "APPROVED";
+    }
     const isExamStartPermitted = Boolean((college?.examStarted ?? true) && (activePaper.isLive !== false));
     const effectiveStartedAt = isExamStartPermitted
       ? (college?.examStartedAt || activePaper.startedAt || store.exam.runs[0]?.startedAt || new Date().toISOString())
@@ -2310,7 +2365,7 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       requireLoginApproval: requireApproval,
       isLoginApproved: isApproved,
       isExamStartPermitted,
-      approvalStatus: curUser?.approvalStatus ?? (isApproved ? "APPROVED" : "PENDING"),
+      approvalStatus: userInStore?.approvalStatus ?? curUser?.approvalStatus ?? (isApproved ? "APPROVED" : "PENDING"),
       examRun: {
         startedAt: effectiveStartedAt,
         exam: {
@@ -2383,7 +2438,9 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     const requireApproval = (candidateCollege?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? candidateCollege?.requireLoginApproval ?? true;
 
     // Login Approval Check
-    if (requireApproval && store.currentUser && store.currentUser.loginApproved === false) {
+    const userInStore = (store.users || []).find((u: any) => u.id === store.currentUser?.id || (u.phone && u.phone === store.currentUser?.phone));
+    const isCandidateApproved = userInStore?.loginApproved ?? store.currentUser?.loginApproved ?? !requireApproval;
+    if (requireApproval && !isCandidateApproved) {
       throw new ApiError(
         403,
         `Student Login Approval Required: An Invigilator or Administrator must approve your candidate login before you can begin the examination. Please wait in the examination lobby or notify your proctor.`

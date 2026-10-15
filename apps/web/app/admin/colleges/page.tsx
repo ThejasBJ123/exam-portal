@@ -9,6 +9,8 @@ import { downloadExcel } from "@/lib/excelExport";
 interface CollegeWithMeta extends College {
   assignedPapers?: QuestionPaper[];
   studentCount?: number;
+  approvedStudentCount?: number;
+  pendingStudentCount?: number;
 }
 
 export default function CollegesPage() {
@@ -23,20 +25,22 @@ export default function CollegesPage() {
   // Modals state
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showAssignModal, setShowAssignModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [showTimingModal, setShowTimingModal] = useState(false);
-  const [showApprovalsModal, setShowApprovalsModal] = useState(false);
+  const [showControlModal, setShowControlModal] = useState(false);
+  const [controlModalTab, setControlModalTab] = useState<"timing" | "approvals" | "details">("timing");
   const [selectedCollege, setSelectedCollege] = useState<CollegeWithMeta | null>(null);
 
-  // Timing & Approval configuration state
+  // Timing & Approval configuration state in modal
   const [timingMinDuration, setTimingMinDuration] = useState(30);
   const [timingMaxDuration, setTimingMaxDuration] = useState(60);
   const [timingRequireLoginApproval, setTimingRequireLoginApproval] = useState(true);
   const [timingExamStarted, setTimingExamStarted] = useState(true);
-  const [timingExamConfigs, setTimingExamConfigs] = useState<Record<string, { minDurationMinutes: number; maxDurationMinutes: number; requireLoginApproval?: boolean }>>({});
 
-  // Student Login Approvals state
-  const [approvalsCollege, setApprovalsCollege] = useState<CollegeWithMeta | null>(null);
+  // Edit details inside modal
+  const [editName, setEditName] = useState("");
+  const [editCode, setEditCode] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+
+  // Enrolled students for selected college
   const [collegeStudents, setCollegeStudents] = useState<any[]>([]);
   const [loadingStudents, setLoadingStudents] = useState(false);
   const [approvalMessage, setApprovalMessage] = useState("");
@@ -53,14 +57,6 @@ export default function CollegesPage() {
 
   // Assign modal state
   const [editAssignedPaperIds, setEditAssignedPaperIds] = useState<string[]>([]);
-
-  // Edit college info state
-  const [editName, setEditName] = useState("");
-  const [editCode, setEditCode] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [editMinDuration, setEditMinDuration] = useState(30);
-  const [editMaxDuration, setEditMaxDuration] = useState(60);
-  const [editRequireLoginApproval, setEditRequireLoginApproval] = useState(true);
 
   async function loadData() {
     try {
@@ -82,7 +78,6 @@ export default function CollegesPage() {
     loadData();
   }, []);
 
-  // Helper to generate a unique college code based on name or institutional prefix
   function generateUniqueCollegeCode(nameHint?: string) {
     const base = nameHint && nameHint.trim().length > 0
       ? nameHint
@@ -97,13 +92,9 @@ export default function CollegesPage() {
 
     const year = new Date().getFullYear();
     const randomSuffix = Math.floor(100 + Math.random() * 900);
-    // Combine base with year or random number
     const proposed = `${base || "COL"}-${year}`;
-    
-    // Check if collision exists in loaded colleges
     const exists = colleges.some((c) => c.code.toUpperCase() === proposed.toUpperCase());
-    const finalCode = exists ? `${base || "COL"}-${randomSuffix}` : proposed;
-    return finalCode;
+    return exists ? `${base || "COL"}-${randomSuffix}` : proposed;
   }
 
   function handleOpenCreateModal() {
@@ -114,7 +105,6 @@ export default function CollegesPage() {
     setCreateMinDuration(30);
     setCreateMaxDuration(60);
     setCreateRequireLoginApproval(true);
-    // Default to the first available paper if present
     setCreateAssignedPaperIds(papers.length > 0 ? [papers[0].id] : []);
     setErrorMessage("");
     setShowCreateModal(true);
@@ -159,30 +149,30 @@ export default function CollegesPage() {
       return;
     }
     if (createMinDuration > createMaxDuration) {
-      setErrorMessage("Minimum exam duration cannot be greater than Maximum exam duration.");
+      setErrorMessage("Minimum exam duration cannot be greater than maximum exam duration.");
       return;
     }
     if (createAssignedPaperIds.length === 0) {
-      setErrorMessage("Please allocate at least one Question Paper Set to this college.");
+      setErrorMessage("Please allocate at least one Question Paper set to this college.");
       return;
     }
 
     try {
       setSubmitting(true);
-      await api<College>("/colleges", {
+      await api("/colleges", {
         method: "POST",
         body: JSON.stringify({
           name: createName.trim(),
           code: createCode.trim().toUpperCase(),
           description: createDescription.trim(),
           assignedPaperIds: createAssignedPaperIds,
-          minDurationMinutes: Number(createMinDuration),
-          maxDurationMinutes: Number(createMaxDuration),
-          requireLoginApproval: Boolean(createRequireLoginApproval),
+          minDurationMinutes: createMinDuration,
+          maxDurationMinutes: createMaxDuration,
+          requireLoginApproval: createRequireLoginApproval,
         }),
       });
 
-      setMessage(`College '${createName.trim()}' successfully created with Code ${createCode.trim().toUpperCase()}! (Exam Window: Min ${createMinDuration}m / Max ${createMaxDuration}m)`);
+      setMessage(`College '${createName.trim()}' registered successfully with code '${createCode.trim().toUpperCase()}'.`);
       setShowCreateModal(false);
       await loadData();
       setTimeout(() => setMessage(""), 5000);
@@ -193,183 +183,21 @@ export default function CollegesPage() {
     }
   }
 
-  function handleOpenAssignModal(college: CollegeWithMeta) {
+  // Open the unified College Control Modal (Timing, Student Approvals, Edit Details)
+  async function handleOpenControlModal(college: CollegeWithMeta, tab: "timing" | "approvals" | "details" = "timing") {
     setSelectedCollege(college);
-    setEditAssignedPaperIds(college.assignedPaperIds || []);
-    setErrorMessage("");
-    setShowAssignModal(true);
-  }
-
-  async function handleSavePaperAssignment(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!selectedCollege) return;
-    setErrorMessage("");
-    setMessage("");
-
-    if (editAssignedPaperIds.length === 0) {
-      setErrorMessage("Every college must have at least one assigned question paper.");
-      return;
-    }
-
-    try {
-      setSubmitting(true);
-      await api(`/colleges/${selectedCollege.id}/assign-papers`, {
-        method: "POST",
-        body: JSON.stringify({ paperIds: editAssignedPaperIds }),
-      });
-
-      setMessage(`Question papers updated successfully for ${selectedCollege.name}!`);
-      setShowAssignModal(false);
-      await loadData();
-      setTimeout(() => setMessage(""), 5000);
-    } catch (err: any) {
-      setErrorMessage(err instanceof ApiError ? err.message : err.message || "Failed to update assigned papers.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  function handleOpenEditModal(college: CollegeWithMeta) {
-    setSelectedCollege(college);
-    setEditName(college.name);
-    setEditCode(college.code);
-    setEditDescription(college.description || "");
-    setEditMinDuration(college.minDurationMinutes ?? 30);
-    setEditMaxDuration(college.maxDurationMinutes ?? 60);
-    setEditRequireLoginApproval(college.requireLoginApproval ?? true);
-    setErrorMessage("");
-    setShowEditModal(true);
-  }
-
-  async function handleSaveCollegeEdit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!selectedCollege) return;
-    setErrorMessage("");
-    setMessage("");
-
-    if (!editName.trim()) {
-      setErrorMessage("College name cannot be empty.");
-      return;
-    }
-    if (!editCode.trim()) {
-      setErrorMessage("College code cannot be empty.");
-      return;
-    }
-    if (editMinDuration <= 0) {
-      setErrorMessage("Minimum exam duration must be at least 1 minute.");
-      return;
-    }
-    if (editMaxDuration <= 0) {
-      setErrorMessage("Maximum exam duration must be at least 1 minute.");
-      return;
-    }
-    if (editMinDuration > editMaxDuration) {
-      setErrorMessage("Minimum exam duration cannot be greater than Maximum exam duration.");
-      return;
-    }
-
-    try {
-      setSubmitting(true);
-      await api(`/colleges/${selectedCollege.id}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          name: editName.trim(),
-          code: editCode.trim().toUpperCase(),
-          description: editDescription.trim(),
-          minDurationMinutes: Number(editMinDuration),
-          maxDurationMinutes: Number(editMaxDuration),
-          requireLoginApproval: Boolean(editRequireLoginApproval),
-        }),
-      });
-
-      setMessage(`College '${editName.trim()}' details updated successfully.`);
-      setShowEditModal(false);
-      await loadData();
-      setTimeout(() => setMessage(""), 5000);
-    } catch (err: any) {
-      setErrorMessage(err instanceof ApiError ? err.message : err.message || "Failed to update college.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  // --- Dedicated Timing & Approval Settings Handlers ---
-  function handleOpenTimingModal(college: CollegeWithMeta) {
-    setSelectedCollege(college);
+    setControlModalTab(tab);
     setTimingMinDuration(college.minDurationMinutes ?? 30);
     setTimingMaxDuration(college.maxDurationMinutes ?? 60);
     setTimingRequireLoginApproval(college.requireLoginApproval ?? true);
     setTimingExamStarted(college.examStarted ?? true);
-    setTimingExamConfigs(college.examConfigs ?? {});
-    setErrorMessage("");
-    setShowTimingModal(true);
-  }
-
-  async function handleToggleExamStartPermission(college: CollegeWithMeta) {
-    try {
-      setErrorMessage("");
-      const res: any = await api(`/colleges/${college.id}/toggle-start`, { method: "POST" });
-      const isStarted = Boolean(res?.examStarted);
-      setMessage(
-        isStarted
-          ? `🚀 Live Exam Start Permission GRANTED for ${college.name}! Candidates can now proceed from the lobby into their exam session.`
-          : `⏸️ Exam Start Permission PAUSED for ${college.name}. Candidates will wait in the lobby until authorized.`
-      );
-      await loadData();
-      setTimeout(() => setMessage(""), 5000);
-    } catch (err: any) {
-      setErrorMessage(err instanceof ApiError ? err.message : err.message || "Failed to update exam start permission.");
-    }
-  }
-
-  async function handleSaveTimingSettings(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!selectedCollege) return;
-    setErrorMessage("");
-    setMessage("");
-
-    if (timingMinDuration <= 0) {
-      setErrorMessage("Minimum exam duration must be at least 1 minute.");
-      return;
-    }
-    if (timingMaxDuration <= 0) {
-      setErrorMessage("Maximum exam duration must be at least 1 minute.");
-      return;
-    }
-    if (timingMinDuration > timingMaxDuration) {
-      setErrorMessage("Minimum exam duration cannot be greater than Maximum exam duration.");
-      return;
-    }
-
-    try {
-      setSubmitting(true);
-      await api(`/colleges/${selectedCollege.id}/timing-settings`, {
-        method: "POST",
-        body: JSON.stringify({
-          minDurationMinutes: Number(timingMinDuration),
-          maxDurationMinutes: Number(timingMaxDuration),
-          requireLoginApproval: Boolean(timingRequireLoginApproval),
-          examStarted: Boolean(timingExamStarted),
-          examConfigs: timingExamConfigs,
-        }),
-      });
-
-      setMessage(`Timing and exam start policy updated successfully for ${selectedCollege.name} (Min: ${timingMinDuration}m, Max: ${timingMaxDuration}m, Start Permission: ${timingExamStarted ? "GRANTED" : "LOCKED"})!`);
-      setShowTimingModal(false);
-      await loadData();
-      setTimeout(() => setMessage(""), 5000);
-    } catch (err: any) {
-      setErrorMessage(err instanceof ApiError ? err.message : err.message || "Failed to update exam timing settings.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  // --- Dedicated Student Approvals Modal Handlers ---
-  async function handleOpenApprovalsModal(college: CollegeWithMeta) {
-    setApprovalsCollege(college);
-    setShowApprovalsModal(true);
+    setEditName(college.name);
+    setEditCode(college.code);
+    setEditDescription(college.description || "");
     setApprovalMessage("");
+    setShowControlModal(true);
+
+    // Fetch students enrolled for this college
     try {
       setLoadingStudents(true);
       const students = await api<any[]>(`/colleges/${college.id}/students`);
@@ -381,15 +209,133 @@ export default function CollegesPage() {
     }
   }
 
-  async function handleApproveStudent(studentId: string) {
-    if (!approvalsCollege) return;
+  // Quick 1-Click Toggle: Start or Pause Exam (Direct from table or modal)
+  async function handleToggleExamStartPermission(college: CollegeWithMeta) {
     try {
-      await api(`/colleges/${approvalsCollege.id}/approve-student`, {
+      const res = await api<{ examStarted: boolean; approvedCount?: number }>(`/colleges/${college.id}/toggle-start`, {
+        method: "POST",
+      });
+      const newState = res.examStarted;
+      if (newState) {
+        setMessage(`🚀 Exam started! Permissions granted and all enrolled students approved for ${college.name}.`);
+      } else {
+        setMessage(`⏸️ Exam paused for ${college.name}. New candidates held in lobby.`);
+      }
+      await loadData();
+      if (selectedCollege && selectedCollege.id === college.id) {
+        setTimingExamStarted(newState);
+        const updated = await api<any[]>(`/colleges/${college.id}/students`);
+        setCollegeStudents(updated);
+      }
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to toggle exam start permission.");
+    }
+  }
+
+  // Quick 1-Click Approve All Students for a college (Direct from table row!)
+  async function handleQuickApproveAll(college: CollegeWithMeta) {
+    try {
+      const res = await api<{ approvedCount: number }>(`/colleges/${college.id}/approve-all-students`, {
+        method: "POST",
+      });
+      setMessage(`✅ Approved all ${res.approvedCount || 0} candidate logins for ${college.name}! Their exam access is unlocked.`);
+      await loadData();
+      if (selectedCollege && selectedCollege.id === college.id) {
+        const updated = await api<any[]>(`/colleges/${college.id}/students`);
+        setCollegeStudents(updated);
+      }
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to approve students.");
+    }
+  }
+
+  // Save Timing & Policy from Modal
+  async function handleSaveTimingPolicy(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!selectedCollege) return;
+    if (timingMinDuration <= 0) {
+      setErrorMessage("Minimum duration must be at least 1 minute.");
+      return;
+    }
+    if (timingMaxDuration <= 0) {
+      setErrorMessage("Maximum duration must be at least 1 minute.");
+      return;
+    }
+    if (timingMinDuration > timingMaxDuration) {
+      setErrorMessage("Minimum exam duration cannot be greater than maximum exam duration.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await api(`/colleges/${selectedCollege.id}/timing-settings`, {
+        method: "POST",
+        body: JSON.stringify({
+          minDurationMinutes: timingMinDuration,
+          maxDurationMinutes: timingMaxDuration,
+          requireLoginApproval: timingRequireLoginApproval,
+          examStarted: timingExamStarted,
+        }),
+      });
+
+      setMessage(`Timing and login policies updated for ${selectedCollege.name}.`);
+      setShowControlModal(false);
+      await loadData();
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to save timing policy.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // Save College details from Modal
+  async function handleSaveDetails(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!selectedCollege) return;
+    if (!editName.trim()) {
+      setErrorMessage("College Name cannot be blank.");
+      return;
+    }
+    if (!editCode.trim()) {
+      setErrorMessage("College Code cannot be blank.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await api(`/colleges/${selectedCollege.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: editName.trim(),
+          code: editCode.trim().toUpperCase(),
+          description: editDescription.trim(),
+        }),
+      });
+
+      setMessage(`Details updated for ${editName.trim()}.`);
+      setShowControlModal(false);
+      await loadData();
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to update college details.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // Individual student approval inside modal
+  async function handleApproveStudent(studentId: string) {
+    if (!selectedCollege) return;
+    try {
+      await api(`/colleges/${selectedCollege.id}/approve-student`, {
         method: "POST",
         body: JSON.stringify({ studentId }),
       });
       setApprovalMessage("Student login approved successfully!");
-      const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
+      const updated = await api<any[]>(`/colleges/${selectedCollege.id}/students`);
       setCollegeStudents(updated);
       await loadData();
       setTimeout(() => setApprovalMessage(""), 4000);
@@ -398,31 +344,15 @@ export default function CollegesPage() {
     }
   }
 
-  async function handleApproveAllStudents() {
-    if (!approvalsCollege) return;
-    try {
-      const res = await api<{ approvedCount: number }>(`/colleges/${approvalsCollege.id}/approve-all-students`, {
-        method: "POST",
-      });
-      setApprovalMessage(`Successfully approved all ${res.approvedCount || 0} candidate logins!`);
-      const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
-      setCollegeStudents(updated);
-      await loadData();
-      setTimeout(() => setApprovalMessage(""), 4000);
-    } catch (err: any) {
-      setErrorMessage(err.message || "Failed to approve all students.");
-    }
-  }
-
   async function handleRevokeStudent(studentId: string) {
-    if (!approvalsCollege) return;
+    if (!selectedCollege) return;
     try {
-      await api(`/colleges/${approvalsCollege.id}/revoke-student`, {
+      await api(`/colleges/${selectedCollege.id}/revoke-student`, {
         method: "POST",
         body: JSON.stringify({ studentId }),
       });
-      setApprovalMessage("Student login approval revoked (reset to Pending).");
-      const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
+      setApprovalMessage("Student login approval revoked.");
+      const updated = await api<any[]>(`/colleges/${selectedCollege.id}/students`);
       setCollegeStudents(updated);
       await loadData();
       setTimeout(() => setApprovalMessage(""), 4000);
@@ -431,18 +361,49 @@ export default function CollegesPage() {
     }
   }
 
+  function handleOpenAssignModal(college: CollegeWithMeta) {
+    setSelectedCollege(college);
+    setEditAssignedPaperIds(college.assignedPaperIds || []);
+    setShowAssignModal(true);
+  }
+
+  async function handleSavePaperAssignment(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!selectedCollege) return;
+    if (editAssignedPaperIds.length === 0) {
+      setErrorMessage("Please select at least one question paper set for this college.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      await api(`/colleges/${selectedCollege.id}/assign-papers`, {
+        method: "POST",
+        body: JSON.stringify({ paperIds: editAssignedPaperIds }),
+      });
+
+      setMessage(`Updated paper allocations for ${selectedCollege.name}.`);
+      setShowAssignModal(false);
+      await loadData();
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to assign papers.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   async function handleDeleteCollege(college: CollegeWithMeta) {
     if (!confirm(`Are you sure you want to delete '${college.name}' (${college.code})? Candidates enrolled under this code will lose access.`)) {
       return;
     }
-
     try {
       await api(`/colleges/${college.id}`, { method: "DELETE" });
       setMessage(`College '${college.name}' removed.`);
       await loadData();
       setTimeout(() => setMessage(""), 5000);
     } catch (err: any) {
-      setErrorMessage(err instanceof ApiError ? err.message : err.message || "Failed to delete college.");
+      setErrorMessage(err.message || "Failed to delete college.");
     }
   }
 
@@ -454,6 +415,11 @@ export default function CollegesPage() {
     setTimeout(() => setCopyToast(""), 3000);
   }
 
+  function applyPreset(minM: number, maxM: number) {
+    setTimingMinDuration(minM);
+    setTimingMaxDuration(maxM);
+  }
+
   function exportCollegesExcel() {
     downloadExcel(
       `Kaizentrix_Colleges_Directory_${new Date().toISOString().split("T")[0]}`,
@@ -461,31 +427,11 @@ export default function CollegesPage() {
       [
         { key: "name", label: "College Name" },
         { key: "code", label: "Unique College Code" },
-        {
-          key: "assignedPaperIds",
-          label: "Assigned Papers Count",
-          format: (v) => `${(v || []).length} Paper(s)`,
-        },
-        {
-          key: "assignedPapers",
-          label: "Assigned Paper Titles & Codes",
-          format: (v, r) =>
-            (r.assignedPapers || [])
-              .map((p: QuestionPaper) => `${p.code} (${p.title})`)
-              .join("; ") || "None",
-        },
-        {
-          key: "studentCount",
-          label: "Enrolled Students",
-          format: (v) => String(v || 0),
-        },
-        { key: "description", label: "Department / Campus Info", format: (v) => v || "Main Campus" },
-        { key: "status", label: "Institutional Status" },
-        {
-          key: "createdAt",
-          label: "Created On",
-          format: (v) => (v ? new Date(v).toLocaleDateString() : "N/A"),
-        },
+        { key: "studentCount", label: "Enrolled Students", format: (v) => String(v || 0) },
+        { key: "minDurationMinutes", label: "Min Attendance (Mins)", format: (v) => String(v || 30) },
+        { key: "maxDurationMinutes", label: "Total Duration (Mins)", format: (v) => String(v || 60) },
+        { key: "examStarted", label: "Start Permission Granted", format: (v) => (v ? "YES (LIVE)" : "NO (PAUSED)") },
+        { key: "status", label: "Status" },
       ]
     );
   }
@@ -511,7 +457,7 @@ export default function CollegesPage() {
 
   return (
     <PortalShell role="MASTER_ADMIN">
-      {/* Header section */}
+      {/* Top Header */}
       <div
         style={{
           display: "flex",
@@ -523,235 +469,119 @@ export default function CollegesPage() {
         }}
       >
         <div>
-          <h1 style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-            <span>🏛️</span> College Management & Paper Allocations
+          <h1 style={{ fontSize: "1.75rem", margin: "0 0 0.35rem", color: "#0F172A", fontWeight: 800 }}>
+            🏛️ College Management & Exam Control
           </h1>
-          <p style={{ maxWidth: "750px", marginTop: "0.25rem" }}>
-            Provision participating colleges, issue unique college access codes, and allocate existing question papers separately to each institution. Students are restricted to their college&apos;s assigned papers only.
+          <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.92rem", maxWidth: "750px", lineHeight: 1.5 }}>
+            Configure college timing limits, grant start permission, approve student logins with 1-click, and manage question paper allocations.
           </p>
         </div>
 
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
-          <Link
-            href="/admin/college-reports"
-            className="btn btn-outline"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "0.4rem",
-              background: "#F0FDF4",
-              borderColor: "#86EFAC",
-              color: "#166534",
-              fontWeight: 700,
-              textDecoration: "none",
-            }}
-          >
-            <span>📊</span> College Wise Reports & Excel
-          </Link>
           <button
             type="button"
             className="btn btn-outline"
             onClick={exportCollegesExcel}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", fontSize: "0.85rem" }}
           >
-            <span>📊</span> Export Directory
+            📊 Export Directory
           </button>
           <button
             type="button"
             className="btn btn-primary"
             onClick={handleOpenCreateModal}
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", fontWeight: 600 }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "0.4rem",
+              background: "#2563EB",
+              fontWeight: 700,
+              boxShadow: "0 4px 12px rgba(37, 99, 235, 0.3)",
+            }}
           >
-            <span>+</span> Create New College
+            <span>+ Create New College</span>
           </button>
         </div>
       </div>
 
-      {/* Copy Toast */}
+      {/* Toast & Alert banners */}
+      {message && (
+        <div className="alert alert-success" style={{ marginBottom: "1.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{message}</span>
+          <button type="button" onClick={() => setMessage("")} style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 700 }}>✕</button>
+        </div>
+      )}
+      {errorMessage && (
+        <div className="alert alert-error" style={{ marginBottom: "1.25rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{errorMessage}</span>
+          <button type="button" onClick={() => setErrorMessage("")} style={{ background: "none", border: "none", cursor: "pointer", fontWeight: 700 }}>✕</button>
+        </div>
+      )}
       {copyToast && (
         <div
           style={{
             position: "fixed",
-            bottom: "2rem",
-            right: "2rem",
-            background: "#1E3A8A",
-            color: "#FFFFFF",
-            padding: "0.75rem 1.25rem",
+            bottom: "24px",
+            right: "24px",
+            background: "#1E293B",
+            color: "white",
+            padding: "0.6rem 1.25rem",
             borderRadius: "8px",
-            boxShadow: "0 10px 25px -5px rgba(0,0,0,0.3)",
+            boxShadow: "0 10px 25px rgba(0,0,0,0.25)",
             zIndex: 9999,
-            display: "flex",
-            alignItems: "center",
-            gap: "0.6rem",
+            fontSize: "0.88rem",
             fontWeight: 600,
-            fontSize: "0.9rem",
-            border: "1px solid #60A5FA",
           }}
         >
-          <span>📋</span> {copyToast}
+          {copyToast}
         </div>
       )}
 
-      {/* Feedback Messages */}
-      {message && (
-        <div
-          className="alert alert-ok"
-          style={{
-            background: "#ECFDF5",
-            border: "1px solid #10B981",
-            borderRadius: "8px",
-            padding: "0.85rem 1.25rem",
-            marginBottom: "1.25rem",
-            color: "#065F46",
-            display: "flex",
-            alignItems: "center",
-            gap: "0.6rem",
-          }}
-        >
-          <span style={{ fontSize: "1.2rem" }}>✅</span>
-          <span>{message}</span>
-        </div>
-      )}
-
-      {errorMessage && (
-        <div
-          className="alert alert-error"
-          style={{
-            background: "#FEF2F2",
-            border: "1px solid #DC2626",
-            borderRadius: "8px",
-            padding: "0.85rem 1.25rem",
-            marginBottom: "1.25rem",
-            color: "#991B1B",
-            display: "flex",
-            alignItems: "center",
-            gap: "0.6rem",
-          }}
-        >
-          <span style={{ fontSize: "1.2rem" }}>⛔</span>
-          <span>{errorMessage}</span>
-        </div>
-      )}
-
-      {/* KPI Cards in Blue and White Palette */}
+      {/* KPI Stats Strip */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
           gap: "1rem",
           marginBottom: "1.5rem",
         }}
       >
-        <div
-          className="card"
-          style={{
-            padding: "1.25rem",
-            background: "#FFFFFF",
-            borderLeft: "4px solid #2563EB",
-          }}
-        >
-          <span style={{ fontSize: "0.82rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>
-            Participating Colleges
-          </span>
-          <div style={{ fontSize: "1.85rem", fontWeight: 700, color: "#1E3A8A", marginTop: "0.35rem" }}>
-            {colleges.length}
-          </div>
-          <span style={{ fontSize: "0.78rem", color: "#2563EB", marginTop: "0.2rem", display: "block" }}>
-            Active campus registrations
-          </span>
+        <div className="card" style={{ padding: "1.25rem", borderLeft: "4px solid #2563EB" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Participating Colleges</span>
+          <div style={{ fontSize: "1.85rem", fontWeight: 800, color: "#1E3A8A", marginTop: "0.25rem" }}>{colleges.length}</div>
+          <span style={{ fontSize: "0.78rem", color: "#2563EB" }}>Active registered campuses</span>
         </div>
 
-        <div
-          className="card"
-          style={{
-            padding: "1.25rem",
-            background: "#FFFFFF",
-            borderLeft: "4px solid #0284C7",
-          }}
-        >
-          <span style={{ fontSize: "0.82rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>
-            Available Question Papers
-          </span>
-          <div style={{ fontSize: "1.85rem", fontWeight: 700, color: "#0369A1", marginTop: "0.35rem" }}>
-            {papers.length} Sets
-          </div>
-          <span style={{ fontSize: "0.78rem", color: "#0284C7", marginTop: "0.2rem", display: "block" }}>
-            Ready for institution allocation
-          </span>
+        <div className="card" style={{ padding: "1.25rem", borderLeft: "4px solid #0284C7" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Question Paper Sets</span>
+          <div style={{ fontSize: "1.85rem", fontWeight: 800, color: "#0369A1", marginTop: "0.25rem" }}>{papers.length} Sets</div>
+          <span style={{ fontSize: "0.78rem", color: "#0284C7" }}>Ready for college allocation</span>
         </div>
 
-        <div
-          className="card"
-          style={{
-            padding: "1.25rem",
-            background: "#FFFFFF",
-            borderLeft: "4px solid #059669",
-          }}
-        >
-          <span style={{ fontSize: "0.82rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>
-            Total Allocations
-          </span>
-          <div style={{ fontSize: "1.85rem", fontWeight: 700, color: "#065F46", marginTop: "0.35rem" }}>
-            {totalPaperAllocations}
-          </div>
-          <span style={{ fontSize: "0.78rem", color: "#059669", marginTop: "0.2rem", display: "block" }}>
-            Papers mapped across colleges
-          </span>
+        <div className="card" style={{ padding: "1.25rem", borderLeft: "4px solid #059669" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Allocated Papers</span>
+          <div style={{ fontSize: "1.85rem", fontWeight: 800, color: "#065F46", marginTop: "0.25rem" }}>{totalPaperAllocations}</div>
+          <span style={{ fontSize: "0.78rem", color: "#059669" }}>Papers mapped to colleges</span>
         </div>
 
-        <div
-          className="card"
-          style={{
-            padding: "1.25rem",
-            background: "#FFFFFF",
-            borderLeft: "4px solid #7C3AED",
-          }}
-        >
-          <span style={{ fontSize: "0.82rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>
-            Enrolled Students
-          </span>
-          <div style={{ fontSize: "1.85rem", fontWeight: 700, color: "#5B21B6", marginTop: "0.35rem" }}>
-            {totalEnrolledStudents}
-          </div>
-          <span style={{ fontSize: "0.78rem", color: "#7C3AED", marginTop: "0.2rem", display: "block" }}>
-            Candidates mapped by college code
-          </span>
+        <div className="card" style={{ padding: "1.25rem", borderLeft: "4px solid #7C3AED" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Enrolled Candidates</span>
+          <div style={{ fontSize: "1.85rem", fontWeight: 800, color: "#5B21B6", marginTop: "0.25rem" }}>{totalEnrolledStudents}</div>
+          <span style={{ fontSize: "0.78rem", color: "#7C3AED" }}>Mapped across all college codes</span>
         </div>
 
-        <div
-          className="card"
-          style={{
-            padding: "1.25rem",
-            background: "#FFFFFF",
-            borderLeft: "4px solid #F59E0B",
-          }}
-        >
-          <span style={{ fontSize: "0.82rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>
-            Timing & Approval Policy
-          </span>
-          <div style={{ fontSize: "1.45rem", fontWeight: 700, color: "#B45309", marginTop: "0.35rem" }}>
-            Min: 30m / Max: 60m
-          </div>
-          <span style={{ fontSize: "0.78rem", color: "#D97706", marginTop: "0.2rem", display: "block" }}>
-            Server-enforced timing & login gates
-          </span>
+        <div className="card" style={{ padding: "1.25rem", borderLeft: "4px solid #F59E0B" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--muted)", fontWeight: 600, textTransform: "uppercase" }}>Default Timing Rule</span>
+          <div style={{ fontSize: "1.45rem", fontWeight: 800, color: "#B45309", marginTop: "0.25rem" }}>30m Min / 60m Max</div>
+          <span style={{ fontSize: "0.78rem", color: "#D97706" }}>Locked early submission</span>
         </div>
       </div>
 
       {/* Main Roster Card */}
-      <div className="card" style={{ padding: "1.5rem" }}>
-        {/* Search and filter toolbar */}
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: "1.25rem",
-            flexWrap: "wrap",
-            gap: "0.75rem",
-          }}
-        >
-          <div style={{ position: "relative", minWidth: 300, flex: 1 }}>
+      <div className="card" style={{ padding: "1.5rem", borderRadius: "12px", border: "1px solid var(--border)" }}>
+        {/* Search & Filter Bar */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem", flexWrap: "wrap", gap: "0.75rem" }}>
+          <div style={{ position: "relative", minWidth: 320, flex: 1 }}>
             <input
               type="text"
               placeholder="Search colleges by name, code, or description..."
@@ -759,14 +589,14 @@ export default function CollegesPage() {
               onChange={(e) => setSearch(e.target.value)}
               style={{
                 width: "100%",
-                padding: "0.55rem 0.85rem",
-                borderRadius: "6px",
+                padding: "0.6rem 0.9rem",
+                borderRadius: "8px",
                 border: "1px solid var(--border)",
                 fontSize: "0.9rem",
               }}
             />
           </div>
-          <span style={{ fontSize: "0.85rem", color: "var(--muted)", fontWeight: 500 }}>
+          <span style={{ fontSize: "0.85rem", color: "var(--muted)", fontWeight: 600 }}>
             Showing {filteredColleges.length} of {colleges.length} colleges
           </span>
         </div>
@@ -774,41 +604,40 @@ export default function CollegesPage() {
         {/* Colleges Table */}
         {loading ? (
           <div style={{ textAlign: "center", padding: "3rem", color: "var(--muted)" }}>
-            Loading colleges and paper allocation rosters…
+            Loading colleges and exam status…
           </div>
         ) : filteredColleges.length === 0 ? (
           <div style={{ textAlign: "center", padding: "3.5rem 1rem", border: "1px dashed var(--border)", borderRadius: "8px" }}>
             <span style={{ fontSize: "2rem", display: "block", marginBottom: "0.5rem" }}>🏛️</span>
             <h3 style={{ margin: 0, color: "#1E3A8A" }}>No Colleges Found</h3>
             <p style={{ color: "var(--muted)", fontSize: "0.9rem", margin: "0.5rem 0 1.25rem" }}>
-              {search ? "No colleges match your current search query." : "No partner colleges have been registered yet."}
+              {search ? "No colleges match your search query." : "No colleges registered yet."}
             </p>
             <button type="button" className="btn btn-primary" onClick={handleOpenCreateModal}>
               + Create First College
             </button>
           </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="table" style={{ width: "100%", textAlign: "left" }}>
+          <div style={{ width: "100%", overflowX: "auto" }}>
+            <table className="table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
               <thead>
                 <tr style={{ background: "#F8FAFC", borderBottom: "2px solid #E2E8F0" }}>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>College / Institution</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>Unique College Code</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>Exam Duration Window</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Login Approval</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Exam Start Permission</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700 }}>Assigned Question Papers</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Students</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "center" }}>Status</th>
-                  <th style={{ padding: "0.85rem 1rem", color: "#1E3A8A", fontWeight: 700, textAlign: "right" }}>Actions</th>
+                  <th style={{ padding: "0.9rem 1rem", color: "#1E3A8A", fontWeight: 700, minWidth: "220px" }}>College & Access Code</th>
+                  <th style={{ padding: "0.9rem 1rem", color: "#1E3A8A", fontWeight: 700, minWidth: "150px" }}>Exam Timing Policy</th>
+                  <th style={{ padding: "0.9rem 1rem", color: "#1E3A8A", fontWeight: 700, minWidth: "160px" }}>Assigned Papers</th>
+                  <th style={{ padding: "0.9rem 1rem", color: "#1E3A8A", fontWeight: 700, minWidth: "180px" }}>Students & Approvals</th>
+                  <th style={{ padding: "0.9rem 1rem", color: "#1E3A8A", fontWeight: 700, minWidth: "210px", textAlign: "right" }}>Exam Control & Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredColleges.map((college) => {
-                  const assignedList = (college.assignedPapers || papers.filter((p) => college.assignedPaperIds?.includes(p.id)));
+                  const assignedList = college.assignedPapers || papers.filter((p) => college.assignedPaperIds?.includes(p.id));
                   const minDur = college.minDurationMinutes ?? 30;
                   const maxDur = college.maxDurationMinutes ?? 60;
-                  const requiresApproval = college.requireLoginApproval ?? true;
+                  const isLive = college.examStarted ?? true;
+                  const studentCount = college.studentCount ?? 0;
+                  const pendingCount = college.pendingStudentCount ?? 0;
+                  const approvedCount = college.approvedStudentCount ?? Math.max(0, studentCount - pendingCount);
 
                   return (
                     <tr
@@ -818,47 +647,45 @@ export default function CollegesPage() {
                         transition: "background 0.15s ease",
                       }}
                     >
-                      {/* Name & Description */}
+                      {/* Column 1: College Name & Code */}
                       <td style={{ padding: "1rem" }}>
-                        <div style={{ fontWeight: 700, color: "#1E293B", fontSize: "0.95rem" }}>
+                        <div style={{ fontWeight: 800, color: "#0F172A", fontSize: "0.96rem", lineHeight: 1.3 }}>
                           {college.name}
                         </div>
                         {college.description ? (
-                          <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: "0.2rem" }}>
+                          <div style={{ fontSize: "0.78rem", color: "var(--muted)", margin: "0.2rem 0 0.4rem" }}>
                             {college.description}
                           </div>
-                        ) : null}
-                      </td>
-
-                      {/* Unique College Code */}
-                      <td style={{ padding: "1rem" }}>
-                        <div style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
+                        ) : (
+                          <div style={{ height: "0.3rem" }} />
+                        )}
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: "0.35rem" }}>
                           <span
                             style={{
                               fontFamily: "var(--font-mono)",
                               fontWeight: 700,
-                              fontSize: "0.88rem",
+                              fontSize: "0.82rem",
                               letterSpacing: "0.06em",
                               background: "#EFF6FF",
                               color: "#1E40AF",
                               border: "1px solid #BFDBFE",
-                              padding: "0.25rem 0.6rem",
-                              borderRadius: "6px",
+                              padding: "0.15rem 0.5rem",
+                              borderRadius: "4px",
                             }}
                           >
                             {college.code}
                           </span>
                           <button
                             type="button"
-                            title="Copy College Code"
+                            title="Copy Code"
                             onClick={() => handleCopyCode(college.code)}
                             style={{
                               background: "none",
                               border: "none",
                               cursor: "pointer",
-                              padding: "4px",
+                              padding: "2px",
                               color: "#64748B",
-                              fontSize: "0.9rem",
+                              fontSize: "0.85rem",
                             }}
                           >
                             📋
@@ -866,184 +693,78 @@ export default function CollegesPage() {
                         </div>
                       </td>
 
-                      {/* Exam Duration Window */}
-                      <td style={{ padding: "1rem", whiteSpace: "nowrap" }}>
-                        <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                      {/* Column 2: Timing Policy */}
+                      <td style={{ padding: "1rem", verticalAlign: "middle" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
                           <span
                             style={{
-                              fontSize: "0.78rem",
-                              fontWeight: 700,
-                              color: "#1E40AF",
-                              background: "#EFF6FF",
-                              border: "1px solid #BFDBFE",
-                              padding: "0.2rem 0.5rem",
-                              borderRadius: "4px",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "0.25rem",
-                            }}
-                            title="Minimum exam completion time before candidate can submit"
-                          >
-                            <span>⏱️</span>
-                            <span>Min: <strong>{minDur}m</strong></span>
-                          </span>
-                          <span
-                            style={{
-                              fontSize: "0.78rem",
+                              fontSize: "0.8rem",
                               fontWeight: 700,
                               color: "#065F46",
                               background: "#ECFDF5",
                               border: "1px solid #A7F3D0",
-                              padding: "0.2rem 0.5rem",
-                              borderRadius: "4px",
+                              padding: "0.2rem 0.55rem",
+                              borderRadius: "5px",
                               display: "inline-flex",
                               alignItems: "center",
-                              gap: "0.25rem",
+                              gap: "0.3rem",
+                              width: "fit-content",
                             }}
-                            title="Maximum exam duration before automatic submission"
+                            title="Total exam duration before auto-submission"
                           >
                             <span>⌛</span>
-                            <span>Max: <strong>{maxDur}m</strong></span>
+                            <span>Total: <strong>{maxDur}m</strong></span>
                           </span>
-                        </div>
-                      </td>
 
-                      {/* Student Login Approval Setting */}
-                      <td style={{ padding: "1rem", textAlign: "center", whiteSpace: "nowrap" }}>
-                        {requiresApproval ? (
                           <span
-                            className="chip"
                             style={{
-                              background: "#FEF3C7",
+                              fontSize: "0.8rem",
+                              fontWeight: 700,
                               color: "#92400E",
+                              background: "#FEF3C7",
                               border: "1px solid #FCD34D",
-                              fontSize: "0.75rem",
-                              fontWeight: 700,
-                              padding: "0.25rem 0.6rem",
-                              borderRadius: "12px",
+                              padding: "0.2rem 0.55rem",
+                              borderRadius: "5px",
                               display: "inline-flex",
                               alignItems: "center",
                               gap: "0.3rem",
+                              width: "fit-content",
                             }}
-                            title="Staff/Admin must approve candidate login before exam begins"
+                            title="Compulsory minimum attendance before candidate can submit"
                           >
-                            <span>🛡️</span> Mandatory Approval
+                            <span>🔒</span>
+                            <span>Min Lock: <strong>{minDur}m</strong></span>
                           </span>
-                        ) : (
-                          <span
-                            className="chip"
-                            style={{
-                              background: "#DCFCE7",
-                              color: "#166534",
-                              border: "1px solid #86EFAC",
-                              fontSize: "0.75rem",
-                              fontWeight: 700,
-                              padding: "0.25rem 0.6rem",
-                              borderRadius: "12px",
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "0.3rem",
-                            }}
-                            title="Candidates immediately proceed upon login"
-                          >
-                            <span>⚡</span> Instant Auto-Entry
-                          </span>
-                        )}
-                      </td>
-
-                      {/* Official Exam Start Permission Gatekeeper */}
-                      <td style={{ padding: "1rem", textAlign: "center", whiteSpace: "nowrap" }}>
-                        <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "center", gap: "0.35rem" }}>
-                          {college.examStarted ?? true ? (
-                            <span
-                              className="chip"
-                              style={{
-                                background: "#DCFCE7",
-                                color: "#166534",
-                                border: "1px solid #86EFAC",
-                                fontSize: "0.74rem",
-                                fontWeight: 700,
-                                padding: "0.22rem 0.55rem",
-                                borderRadius: "12px",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "0.3rem",
-                              }}
-                              title="Exam start permission is GRANTED. Candidates can enter live exam."
-                            >
-                              <span>🟢</span> PERMITTED (LIVE)
-                            </span>
-                          ) : (
-                            <span
-                              className="chip"
-                              style={{
-                                background: "#FEF3C7",
-                                color: "#B45309",
-                                border: "1px solid #FCD34D",
-                                fontSize: "0.74rem",
-                                fontWeight: 700,
-                                padding: "0.22rem 0.55rem",
-                                borderRadius: "12px",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "0.3rem",
-                              }}
-                              title="Exam start permission is PAUSED. Candidates held in lobby."
-                            >
-                              <span>⏸️</span> WAITING PERMISSION
-                            </span>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => handleToggleExamStartPermission(college)}
-                            className="btn btn-outline btn-sm"
-                            style={{
-                              fontSize: "0.7rem",
-                              padding: "0.15rem 0.45rem",
-                              fontWeight: 700,
-                              borderColor: (college.examStarted ?? true) ? "#FCA5A5" : "#86EFAC",
-                              color: (college.examStarted ?? true) ? "#B91C1C" : "#166534",
-                              background: (college.examStarted ?? true) ? "#FEF2F2" : "#F0FDF4",
-                              cursor: "pointer",
-                            }}
-                            title={(college.examStarted ?? true) ? "Click to revoke start permission (hold students in lobby)" : "Click to grant start permission (allow students to enter exam)"}
-                          >
-                            {(college.examStarted ?? true) ? "⏸️ Pause Start" : "🚀 Grant Start"}
-                          </button>
                         </div>
                       </td>
 
-                      {/* Assigned Question Papers */}
-                      <td style={{ padding: "1rem", maxWidth: "300px" }}>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem", alignItems: "center" }}>
+                      {/* Column 3: Assigned Papers */}
+                      <td style={{ padding: "1rem", verticalAlign: "middle" }}>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.35rem", alignItems: "center" }}>
                           {assignedList.length === 0 ? (
-                            <span style={{ fontSize: "0.8rem", color: "#DC2626", fontStyle: "italic" }}>
-                              ⚠️ No papers assigned
+                            <span style={{ fontSize: "0.78rem", color: "#DC2626", fontStyle: "italic" }}>
+                              ⚠️ No papers
                             </span>
                           ) : (
                             assignedList.map((paper) => (
                               <span
                                 key={paper.id}
-                                title={`${paper.title} (${paper.durationMinutes} mins)`}
+                                title={paper.title}
                                 style={{
-                                  fontSize: "0.76rem",
+                                  fontSize: "0.75rem",
                                   fontWeight: 600,
-                                  background: "#F0FDF4",
-                                  color: "#166534",
-                                  border: "1px solid #BBF7D0",
-                                  padding: "0.2rem 0.5rem",
+                                  background: "#F1F5F9",
+                                  color: "#334155",
+                                  border: "1px solid #CBD5E1",
+                                  padding: "0.15rem 0.45rem",
                                   borderRadius: "4px",
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: "0.25rem",
+                                  fontFamily: "var(--font-mono)",
                                 }}
                               >
-                                <span>📄</span>
-                                <strong style={{ fontFamily: "var(--font-mono)" }}>{paper.code}</strong>
+                                {paper.code}
                               </span>
                             ))
                           )}
-
                           <button
                             type="button"
                             onClick={() => handleOpenAssignModal(college)}
@@ -1058,94 +779,148 @@ export default function CollegesPage() {
                               fontWeight: 600,
                             }}
                           >
-                            ⚙️ Papers
+                            + Assign
                           </button>
                         </div>
                       </td>
 
-                      {/* Enrolled Students */}
-                      <td style={{ padding: "1rem", textAlign: "center" }}>
-                        <span
-                          style={{
-                            fontWeight: 700,
-                            fontSize: "0.92rem",
-                            color: (college.studentCount || 0) > 0 ? "#1E3A8A" : "#94A3B8",
-                          }}
-                        >
-                          {college.studentCount || 0}
-                        </span>
+                      {/* Column 4: Students & Approvals */}
+                      <td style={{ padding: "1rem", verticalAlign: "middle" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
+                          <div style={{ fontSize: "0.85rem", fontWeight: 700, color: "#1E293B" }}>
+                            👥 {studentCount} Enrolled
+                          </div>
+
+                          {studentCount === 0 ? (
+                            <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>No students yet</span>
+                          ) : pendingCount > 0 ? (
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", flexWrap: "wrap" }}>
+                              <span
+                                style={{
+                                  fontSize: "0.74rem",
+                                  fontWeight: 700,
+                                  color: "#B45309",
+                                  background: "#FEF3C7",
+                                  border: "1px solid #FCD34D",
+                                  padding: "0.15rem 0.45rem",
+                                  borderRadius: "4px",
+                                }}
+                              >
+                                ⏳ {pendingCount} Pending
+                              </span>
+                              <button
+                                type="button"
+                                className="btn btn-outline btn-sm"
+                                onClick={() => handleQuickApproveAll(college)}
+                                style={{
+                                  fontSize: "0.72rem",
+                                  padding: "0.15rem 0.5rem",
+                                  background: "#ECFDF5",
+                                  color: "#065F46",
+                                  borderColor: "#6EE7B7",
+                                  fontWeight: 700,
+                                  cursor: "pointer",
+                                }}
+                                title="Approve all waiting students for this college now"
+                              >
+                                ⚡ Approve All
+                              </button>
+                            </div>
+                          ) : (
+                            <span
+                              style={{
+                                fontSize: "0.74rem",
+                                fontWeight: 700,
+                                color: "#065F46",
+                                background: "#ECFDF5",
+                                border: "1px solid #A7F3D0",
+                                padding: "0.15rem 0.45rem",
+                                borderRadius: "4px",
+                                width: "fit-content",
+                              }}
+                            >
+                              ✅ {approvedCount} Approved
+                            </span>
+                          )}
+                        </div>
                       </td>
 
-                      {/* Status */}
-                      <td style={{ padding: "1rem", textAlign: "center" }}>
-                        <span
-                          className="chip"
-                          style={{
-                            background: college.status === "ACTIVE" ? "#DCFCE7" : "#F1F5F9",
-                            color: college.status === "ACTIVE" ? "#166534" : "#64748B",
-                            fontSize: "0.75rem",
-                            fontWeight: 700,
-                            padding: "0.2rem 0.55rem",
-                            borderRadius: "12px",
-                          }}
-                        >
-                          {college.status}
-                        </span>
-                      </td>
+                      {/* Column 5: Exam Control & Actions */}
+                      <td style={{ padding: "1rem", textAlign: "right", verticalAlign: "middle" }}>
+                        <div style={{ display: "inline-flex", flexDirection: "column", alignItems: "flex-end", gap: "0.4rem" }}>
+                          {/* Live / Start Toggle */}
+                          <button
+                            type="button"
+                            onClick={() => handleToggleExamStartPermission(college)}
+                            className="btn btn-sm"
+                            style={{
+                              fontSize: "0.8rem",
+                              fontWeight: 800,
+                              padding: "0.4rem 0.85rem",
+                              borderRadius: "8px",
+                              cursor: "pointer",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "0.4rem",
+                              background: isLive ? "#FEF2F2" : "linear-gradient(135deg, #10B981, #059669)",
+                              color: isLive ? "#B91C1C" : "#FFFFFF",
+                              border: isLive ? "1.5px solid #FCA5A5" : "none",
+                              boxShadow: isLive ? "none" : "0 3px 10px rgba(16, 185, 129, 0.35)",
+                            }}
+                            title={isLive ? "Click to Pause Exam (holds students in lobby)" : "Click to Start Exam & Authorize all waiting students"}
+                          >
+                            {isLive ? (
+                              <>
+                                <span>⏸️</span>
+                                <span>Exam Live (Pause)</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>🚀</span>
+                                <span>Start Exam for Students</span>
+                              </>
+                            )}
+                          </button>
 
-                      {/* Actions */}
-                      <td style={{ padding: "1rem", textAlign: "right" }}>
-                        <div style={{ display: "inline-flex", gap: "0.35rem", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => handleOpenTimingModal(college)}
-                            title="Configure Minimum & Maximum Exam Durations and Login Approval settings"
-                            style={{
-                              fontSize: "0.78rem",
-                              padding: "0.3rem 0.6rem",
-                              color: "#1E40AF",
-                              borderColor: "#93C5FD",
-                              fontWeight: 700,
-                              background: "#EFF6FF",
-                            }}
-                          >
-                            ⏱️ Duration & Approval
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-outline btn-sm"
-                            onClick={() => handleOpenApprovalsModal(college)}
-                            title="View enrolled candidates and manage login approvals"
-                            style={{
-                              fontSize: "0.78rem",
-                              padding: "0.3rem 0.55rem",
-                              color: "#0F766E",
-                              borderColor: "#99F6E4",
-                              fontWeight: 600,
-                              background: "#F0FDFA",
-                            }}
-                          >
-                            👥 Approvals
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => handleOpenEditModal(college)}
-                            title="Edit College Information"
-                            style={{ fontSize: "0.78rem", padding: "0.3rem 0.45rem" }}
-                          >
-                            ✏️ Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => handleDeleteCollege(college)}
-                            title="Delete College"
-                            style={{ fontSize: "0.78rem", padding: "0.3rem 0.45rem", color: "#DC2626" }}
-                          >
-                            🗑️
-                          </button>
+                          {/* Secondary actions */}
+                          <div style={{ display: "inline-flex", gap: "0.3rem", alignItems: "center" }}>
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={() => handleOpenControlModal(college, "timing")}
+                              style={{
+                                fontSize: "0.75rem",
+                                padding: "0.25rem 0.55rem",
+                                color: "#1E40AF",
+                                borderColor: "#93C5FD",
+                                background: "#EFF6FF",
+                                fontWeight: 700,
+                              }}
+                              title="Configure timing limits, approvals roster, and details"
+                            >
+                              ⚙️ Timing & Control
+                            </button>
+
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => handleOpenControlModal(college, "details")}
+                              title="Edit College Information"
+                              style={{ fontSize: "0.75rem", padding: "0.25rem 0.45rem" }}
+                            >
+                              ✏️
+                            </button>
+
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => handleDeleteCollege(college)}
+                              title="Delete College"
+                              style={{ fontSize: "0.75rem", padding: "0.25rem 0.45rem", color: "#DC2626" }}
+                            >
+                              🗑️
+                            </button>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -1158,7 +933,473 @@ export default function CollegesPage() {
       </div>
 
       {/* ========================================================================= */}
-      {/* MODAL 1: CREATE NEW COLLEGE WITH CODE GENERATOR & SEPARATE PAPER ALLOCATION */}
+      {/* UNIFIED MODAL: INSTITUTIONAL EXAM CONTROL & TIMING POLICY CENTER */}
+      {/* ========================================================================= */}
+      {showControlModal && selectedCollege && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(15, 23, 42, 0.65)",
+            backdropFilter: "blur(4px)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "1rem",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: 680,
+              width: "100%",
+              maxHeight: "92vh",
+              overflowY: "auto",
+              padding: "2rem",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.35)",
+              border: "1px solid #BFDBFE",
+              borderRadius: "14px",
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <div>
+                <h2 style={{ margin: 0, color: "#1E3A8A", fontSize: "1.35rem", fontWeight: 800 }}>
+                  ⚙️ {selectedCollege.name}
+                </h2>
+                <span style={{ fontSize: "0.82rem", color: "var(--muted)" }}>
+                  Institutional Code: <strong style={{ fontFamily: "var(--font-mono)", color: "#1E40AF" }}>{selectedCollege.code}</strong>
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowControlModal(false)}
+                style={{ fontSize: "1.2rem", padding: "0.2rem 0.5rem" }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div
+              style={{
+                display: "flex",
+                gap: "0.5rem",
+                borderBottom: "1px solid var(--border)",
+                marginBottom: "1.5rem",
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setControlModalTab("timing")}
+                style={{
+                  padding: "0.6rem 1rem",
+                  fontSize: "0.88rem",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  background: "none",
+                  border: "none",
+                  borderBottom: controlModalTab === "timing" ? "3px solid #2563EB" : "3px solid transparent",
+                  color: controlModalTab === "timing" ? "#2563EB" : "var(--muted)",
+                }}
+              >
+                ⏱️ Exam Timing & Policy
+              </button>
+              <button
+                type="button"
+                onClick={() => setControlModalTab("approvals")}
+                style={{
+                  padding: "0.6rem 1rem",
+                  fontSize: "0.88rem",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  background: "none",
+                  border: "none",
+                  borderBottom: controlModalTab === "approvals" ? "3px solid #2563EB" : "3px solid transparent",
+                  color: controlModalTab === "approvals" ? "#2563EB" : "var(--muted)",
+                }}
+              >
+                👥 Enrolled Candidates ({collegeStudents.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setControlModalTab("details")}
+                style={{
+                  padding: "0.6rem 1rem",
+                  fontSize: "0.88rem",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  background: "none",
+                  border: "none",
+                  borderBottom: controlModalTab === "details" ? "3px solid #2563EB" : "3px solid transparent",
+                  color: controlModalTab === "details" ? "#2563EB" : "var(--muted)",
+                }}
+              >
+                📝 College Details
+              </button>
+            </div>
+
+            {/* TAB 1: TIMING & POLICY */}
+            {controlModalTab === "timing" && (
+              <form onSubmit={handleSaveTimingPolicy}>
+                {/* Visual Workflow Banner */}
+                <div
+                  style={{
+                    background: "linear-gradient(135deg, #0F766E 0%, #065F46 100%)",
+                    color: "white",
+                    borderRadius: "10px",
+                    padding: "1.25rem",
+                    marginBottom: "1.5rem",
+                  }}
+                >
+                  <div style={{ fontWeight: 800, fontSize: "0.95rem", marginBottom: "0.3rem" }}>
+                    📋 Institutional Timing & Submission Lock
+                  </div>
+                  <div style={{ fontSize: "0.82rem", opacity: 0.9, lineHeight: 1.5 }}>
+                    Timer starts from actual server-recorded exam start time. Submissions are strictly locked until minimum duration has elapsed.
+                  </div>
+
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr 1fr",
+                      gap: "0.5rem",
+                      background: "rgba(0,0,0,0.2)",
+                      borderRadius: "8px",
+                      padding: "0.75rem",
+                      marginTop: "0.75rem",
+                      textAlign: "center",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: "0.7rem", opacity: 0.8, textTransform: "uppercase" }}>Exam Starts</div>
+                      <strong style={{ fontSize: "0.95rem" }}>1:00 PM</strong>
+                    </div>
+                    <div style={{ borderLeft: "1px solid rgba(255,255,255,0.2)", borderRight: "1px solid rgba(255,255,255,0.2)" }}>
+                      <div style={{ fontSize: "0.7rem", opacity: 0.8, textTransform: "uppercase" }}>Earliest Submit</div>
+                      <strong style={{ fontSize: "0.95rem", color: "#FDE68A" }}>1:{timingMinDuration.toString().padStart(2, "0")} PM ({timingMinDuration}m)</strong>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "0.7rem", opacity: 0.8, textTransform: "uppercase" }}>Auto-Submits At</div>
+                      <strong style={{ fontSize: "0.95rem" }}>2:00 PM ({timingMaxDuration}m)</strong>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Presets */}
+                <div style={{ marginBottom: "1.25rem" }}>
+                  <label style={{ fontSize: "0.82rem", fontWeight: 700, color: "var(--muted)", display: "block", marginBottom: "0.4rem" }}>
+                    ⚡ Quick Duration Presets:
+                  </label>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => applyPreset(30, 60)}
+                      style={{ fontSize: "0.78rem", fontWeight: 700, background: timingMinDuration === 30 && timingMaxDuration === 60 ? "#EFF6FF" : "white" }}
+                    >
+                      Standard (30m Min / 60m Max)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => applyPreset(45, 90)}
+                      style={{ fontSize: "0.78rem", fontWeight: 700, background: timingMinDuration === 45 && timingMaxDuration === 90 ? "#EFF6FF" : "white" }}
+                    >
+                      Medium (45m Min / 90m Max)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => applyPreset(60, 120)}
+                      style={{ fontSize: "0.78rem", fontWeight: 700, background: timingMinDuration === 60 && timingMaxDuration === 120 ? "#EFF6FF" : "white" }}
+                    >
+                      Full 2-Hour (60m Min / 120m Max)
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => applyPreset(15, 30)}
+                      style={{ fontSize: "0.78rem", fontWeight: 700, background: timingMinDuration === 15 && timingMaxDuration === 30 ? "#EFF6FF" : "white" }}
+                    >
+                      Quick Quiz (15m Min / 30m Max)
+                    </button>
+                  </div>
+                </div>
+
+                {/* Inputs for Min and Max Duration */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1.5rem" }}>
+                  <div>
+                    <label htmlFor="modal-min-dur" style={{ fontWeight: 700, color: "#92400E", fontSize: "0.88rem" }}>
+                      Minimum Time Limit (Minutes) *
+                    </label>
+                    <input
+                      id="modal-min-dur"
+                      type="number"
+                      min={1}
+                      max={timingMaxDuration}
+                      required
+                      value={timingMinDuration}
+                      onChange={(e) => setTimingMinDuration(Math.max(1, parseInt(e.target.value) || 1))}
+                      style={{ width: "100%", padding: "0.6rem 0.85rem", fontSize: "1rem", fontWeight: 700 }}
+                    />
+                    <span style={{ fontSize: "0.75rem", color: "var(--muted)", display: "block", marginTop: "0.25rem" }}>
+                      🔒 Candidate cannot submit before {timingMinDuration} minutes.
+                    </span>
+                  </div>
+
+                  <div>
+                    <label htmlFor="modal-max-dur" style={{ fontWeight: 700, color: "#065F46", fontSize: "0.88rem" }}>
+                      Maximum Total Duration (Minutes) *
+                    </label>
+                    <input
+                      id="modal-max-dur"
+                      type="number"
+                      min={timingMinDuration}
+                      max={480}
+                      required
+                      value={timingMaxDuration}
+                      onChange={(e) => setTimingMaxDuration(Math.max(timingMinDuration, parseInt(e.target.value) || 60))}
+                      style={{ width: "100%", padding: "0.6rem 0.85rem", fontSize: "1rem", fontWeight: 700 }}
+                    />
+                    <span style={{ fontSize: "0.75rem", color: "var(--muted)", display: "block", marginTop: "0.25rem" }}>
+                      ⌛ Exam is automatically submitted after {timingMaxDuration} minutes.
+                    </span>
+                  </div>
+                </div>
+
+                {/* Exam Start Permission Toggle */}
+                <div
+                  style={{
+                    background: timingExamStarted ? "#F0FDF4" : "#FFFBEB",
+                    border: timingExamStarted ? "1.5px solid #86EFAC" : "1.5px solid #FCD34D",
+                    borderRadius: "10px",
+                    padding: "1rem",
+                    marginBottom: "1rem",
+                  }}
+                >
+                  <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer", margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={timingExamStarted}
+                      onChange={(e) => setTimingExamStarted(e.target.checked)}
+                      style={{ width: "20px", height: "20px", accentColor: "#10B981" }}
+                    />
+                    <div>
+                      <strong style={{ fontSize: "0.92rem", color: timingExamStarted ? "#15803D" : "#B45309" }}>
+                        🚀 Grant Exam Start Permission (Live Batch)
+                      </strong>
+                      <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.15rem" }}>
+                        When enabled, candidates can immediately enter the live exam station from the lobby. If paused, candidates wait in lobby.
+                      </div>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Require Login Approval Toggle */}
+                <div
+                  style={{
+                    background: "#F8FAFC",
+                    border: "1px solid #E2E8F0",
+                    borderRadius: "10px",
+                    padding: "1rem",
+                    marginBottom: "1.5rem",
+                  }}
+                >
+                  <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", cursor: "pointer", margin: 0 }}>
+                    <input
+                      type="checkbox"
+                      checked={timingRequireLoginApproval}
+                      onChange={(e) => setTimingRequireLoginApproval(e.target.checked)}
+                      style={{ width: "20px", height: "20px" }}
+                    />
+                    <div>
+                      <strong style={{ fontSize: "0.92rem", color: "#1E293B" }}>
+                        🛡️ Require Student Login Approval by Admin/Staff
+                      </strong>
+                      <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.15rem" }}>
+                        Candidates must be approved before they can enter. Uncheck to allow instant entry upon registration.
+                      </div>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Footer Buttons */}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+                  <button type="button" className="btn btn-ghost" onClick={() => setShowControlModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={submitting} style={{ fontWeight: 700, padding: "0.65rem 1.5rem" }}>
+                    {submitting ? "Saving Policy…" : "Save Timing & Policy →"}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* TAB 2: ENROLLED CANDIDATES ROSTER */}
+            {controlModalTab === "approvals" && (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem", flexWrap: "wrap", gap: "0.5rem" }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: "1.05rem", color: "#1E293B" }}>Enrolled Student Logins</h3>
+                    <span style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
+                      {collegeStudents.length} candidates registered under {selectedCollege.code}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => handleQuickApproveAll(selectedCollege)}
+                    style={{ background: "#059669", fontWeight: 700 }}
+                  >
+                    ✓ Approve All Students ({collegeStudents.filter((s) => !s.loginApproved).length} Pending)
+                  </button>
+                </div>
+
+                {approvalMessage && (
+                  <div className="alert alert-success" style={{ marginBottom: "1rem", fontSize: "0.85rem" }}>
+                    {approvalMessage}
+                  </div>
+                )}
+
+                {loadingStudents ? (
+                  <div style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>
+                    Loading enrolled candidate roster…
+                  </div>
+                ) : collegeStudents.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: "2.5rem 1rem", border: "1px dashed var(--border)", borderRadius: "8px" }}>
+                    <p style={{ margin: 0, color: "var(--muted)", fontSize: "0.9rem" }}>
+                      No students have logged in or registered under college code <strong>{selectedCollege.code}</strong> yet.
+                    </p>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", maxHeight: "360px", overflowY: "auto" }}>
+                    {collegeStudents.map((student) => (
+                      <div
+                        key={student.id}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          padding: "0.75rem 1rem",
+                          borderRadius: "8px",
+                          background: student.loginApproved ? "#F0FDF4" : "#FFFBEB",
+                          border: student.loginApproved ? "1px solid #BBF7D0" : "1px solid #FDE68A",
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: "0.9rem", color: "#0F172A" }}>
+                            {student.fullName || "Candidate"}
+                          </div>
+                          <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
+                            Roll: <code>{student.rollNumber || "N/A"}</code> • {student.email} • {student.phone}
+                          </div>
+                        </div>
+
+                        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+                          {student.loginApproved ? (
+                            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "#166534", background: "#DCFCE7", padding: "0.2rem 0.5rem", borderRadius: "4px" }}>
+                              ✓ APPROVED
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "#B45309", background: "#FEF3C7", padding: "0.2rem 0.5rem", borderRadius: "4px" }}>
+                              ⏳ PENDING
+                            </span>
+                          )}
+
+                          {student.loginApproved ? (
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={() => handleRevokeStudent(student.id)}
+                              style={{ fontSize: "0.72rem", color: "#DC2626", borderColor: "#FCA5A5" }}
+                            >
+                              Revoke
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm"
+                              onClick={() => handleApproveStudent(student.id)}
+                              style={{ fontSize: "0.72rem", background: "#10B981" }}
+                            >
+                              Approve
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ marginTop: "1.5rem", textAlign: "right" }}>
+                  <button type="button" className="btn btn-outline" onClick={() => setShowControlModal(false)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 3: DETAILS */}
+            {controlModalTab === "details" && (
+              <form onSubmit={handleSaveDetails}>
+                <div className="field" style={{ marginBottom: "1rem" }}>
+                  <label htmlFor="edit-col-name" style={{ fontWeight: 600 }}>College / Institution Name *</label>
+                  <input
+                    id="edit-col-name"
+                    type="text"
+                    required
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    style={{ width: "100%", padding: "0.6rem 0.85rem" }}
+                  />
+                </div>
+
+                <div className="field" style={{ marginBottom: "1rem" }}>
+                  <label htmlFor="edit-col-code" style={{ fontWeight: 600 }}>Unique College Code * (Candidate Access Key)</label>
+                  <input
+                    id="edit-col-code"
+                    type="text"
+                    required
+                    value={editCode}
+                    onChange={(e) => setEditCode(e.target.value.toUpperCase())}
+                    style={{ width: "100%", padding: "0.6rem 0.85rem", fontFamily: "var(--font-mono)", fontWeight: 700 }}
+                  />
+                </div>
+
+                <div className="field" style={{ marginBottom: "1.5rem" }}>
+                  <label htmlFor="edit-col-desc" style={{ fontWeight: 600 }}>Department / Campus Description</label>
+                  <input
+                    id="edit-col-desc"
+                    type="text"
+                    value={editDescription}
+                    onChange={(e) => setEditDescription(e.target.value)}
+                    style={{ width: "100%", padding: "0.6rem 0.85rem" }}
+                  />
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
+                  <button type="button" className="btn btn-ghost" onClick={() => setShowControlModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={submitting}>
+                    {submitting ? "Saving…" : "Update Details →"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: CREATE COLLEGE */}
       {/* ========================================================================= */}
       {showCreateModal && (
         <div
@@ -1195,7 +1436,7 @@ export default function CollegesPage() {
                   🏛️ Create Partner College
                 </h2>
                 <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
-                  Enter the college name, generate a unique access code, and assign question papers.
+                  Enter the college name, unique access code, and allocate question papers.
                 </p>
               </div>
               <button
@@ -1209,7 +1450,6 @@ export default function CollegesPage() {
             </div>
 
             <form onSubmit={handleCreateCollege}>
-              {/* College Name */}
               <div className="field" style={{ marginBottom: "1rem" }}>
                 <label htmlFor="create-college-name" style={{ fontWeight: 600, color: "#1E293B" }}>
                   College / Institution Name *
@@ -1220,14 +1460,11 @@ export default function CollegesPage() {
                   required
                   placeholder="e.g. Bangalore Institute of Technology"
                   value={createName}
-                  onChange={(e) => {
-                    setCreateName(e.target.value);
-                  }}
+                  onChange={(e) => setCreateName(e.target.value)}
                   style={{ width: "100%", padding: "0.6rem 0.85rem" }}
                 />
               </div>
 
-              {/* Unique College Code with Auto-Generator */}
               <div
                 className="field"
                 style={{
@@ -1240,7 +1477,7 @@ export default function CollegesPage() {
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.35rem" }}>
                   <label htmlFor="create-college-code" style={{ fontWeight: 700, color: "#1E40AF" }}>
-                    Unique College Code * (Candidate Exam Access Key)
+                    Unique College Code * (Candidate Access Key)
                   </label>
                   <button
                     type="button"
@@ -1256,7 +1493,7 @@ export default function CollegesPage() {
                       padding: "3px 8px",
                     }}
                   >
-                    ⚡ Auto-Generate Unique Code
+                    ⚡ Auto-Generate Code
                   </button>
                 </div>
                 <input
@@ -1278,12 +1515,8 @@ export default function CollegesPage() {
                     padding: "0.6rem 0.85rem",
                   }}
                 />
-                <span style={{ fontSize: "0.78rem", color: "#3B82F6", display: "block", marginTop: "0.35rem" }}>
-                  This is the single code students enter on the login page to access all exams assigned to this college.
-                </span>
               </div>
 
-              {/* Description / Campus */}
               <div className="field" style={{ marginBottom: "1.25rem" }}>
                 <label htmlFor="create-college-desc" style={{ fontWeight: 600, color: "#1E293B" }}>
                   Department / Campus Description (Optional)
@@ -1298,7 +1531,7 @@ export default function CollegesPage() {
                 />
               </div>
 
-              {/* Exam Timing & Login Approval Configuration */}
+              {/* Timing settings */}
               <div
                 style={{
                   background: "#F0FDFA",
@@ -1311,12 +1544,9 @@ export default function CollegesPage() {
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
                   <span style={{ fontSize: "1.1rem" }}>⏱️</span>
                   <strong style={{ fontSize: "0.92rem", color: "#0F766E" }}>
-                    Exam Duration & Login Approval Settings
+                    Exam Duration & Submission Lock Limits
                   </strong>
                 </div>
-                <p style={{ margin: "0 0 0.85rem", fontSize: "0.78rem", color: "#115E59" }}>
-                  Enforce institutional minimum and maximum exam completion windows. Submissions are strictly locked until minimum duration has elapsed.
-                </p>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.85rem" }}>
                   <div>
@@ -1375,14 +1605,11 @@ export default function CollegesPage() {
                   />
                   <div style={{ fontSize: "0.8rem", color: "#0F766E" }}>
                     <strong>Require Invigilator / Staff Login Approval</strong>
-                    <div style={{ fontSize: "0.72rem", color: "#115E59" }}>
-                      Students must be approved by Staff or Admin before they can start the exam
-                    </div>
                   </div>
                 </label>
               </div>
 
-              {/* Assign Existing Question Papers Separately */}
+              {/* Assign Papers */}
               <div
                 style={{
                   background: "#F8FAFC",
@@ -1392,110 +1619,46 @@ export default function CollegesPage() {
                   marginBottom: "1.5rem",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.6rem" }}>
-                  <div>
-                    <label style={{ fontWeight: 700, color: "#1E293B", fontSize: "0.92rem", display: "block" }}>
-                      📚 Assign Question Papers Separately to this College *
-                    </label>
-                    <span style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
-                      Candidates will ONLY see and take the question papers checked below.
-                    </span>
-                  </div>
-                  <div style={{ display: "flex", gap: "0.4rem" }}>
-                    <button
-                      type="button"
-                      onClick={() => setCreateAssignedPaperIds(papers.map((p) => p.id))}
-                      style={{ background: "none", border: "none", color: "#2563EB", cursor: "pointer", fontSize: "0.75rem", textDecoration: "underline" }}
-                    >
-                      Select All
-                    </button>
-                    <span style={{ color: "#CBD5E1" }}>|</span>
-                    <button
-                      type="button"
-                      onClick={() => setCreateAssignedPaperIds([])}
-                      style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: "0.75rem", textDecoration: "underline" }}
-                    >
-                      Clear
-                    </button>
-                  </div>
+                <label style={{ fontWeight: 700, color: "#1E293B", fontSize: "0.88rem", display: "block", marginBottom: "0.5rem" }}>
+                  📚 Assign Question Papers *
+                </label>
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", maxHeight: "160px", overflowY: "auto" }}>
+                  {papers.map((paper) => {
+                    const isChecked = createAssignedPaperIds.includes(paper.id);
+                    return (
+                      <label
+                        key={paper.id}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.6rem",
+                          padding: "0.4rem 0.6rem",
+                          borderRadius: "4px",
+                          background: isChecked ? "#EFF6FF" : "white",
+                          border: isChecked ? "1px solid #93C5FD" : "1px solid #E2E8F0",
+                          cursor: "pointer",
+                          fontSize: "0.84rem",
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => handleToggleCreatePaper(paper.id)}
+                        />
+                        <span style={{ flex: 1, fontWeight: 600 }}>{paper.title} ({paper.code})</span>
+                        <span style={{ color: "var(--muted)", fontSize: "0.75rem" }}>{paper.durationMinutes}m</span>
+                      </label>
+                    );
+                  })}
                 </div>
-
-                {papers.length === 0 ? (
-                  <div style={{ fontSize: "0.85rem", color: "var(--muted)", fontStyle: "italic" }}>
-                    No question papers found in the bank. Please create question papers first.
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                    {papers.map((paper) => {
-                      const isChecked = createAssignedPaperIds.includes(paper.id);
-                      return (
-                        <label
-                          key={paper.id}
-                          style={{
-                            display: "flex",
-                            alignItems: "flex-start",
-                            gap: "0.75rem",
-                            padding: "0.65rem 0.85rem",
-                            borderRadius: "6px",
-                            background: isChecked ? "#EFF6FF" : "#FFFFFF",
-                            border: isChecked ? "1px solid #93C5FD" : "1px solid #E2E8F0",
-                            cursor: "pointer",
-                            transition: "all 0.15s ease",
-                          }}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={() => handleToggleCreatePaper(paper.id)}
-                            style={{ marginTop: "0.2rem" }}
-                          />
-                          <div style={{ flex: 1 }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <strong style={{ fontSize: "0.88rem", color: isChecked ? "#1E3A8A" : "#1E293B" }}>
-                                {paper.title}
-                              </strong>
-                              <span
-                                style={{
-                                  fontFamily: "var(--font-mono)",
-                                  fontSize: "0.75rem",
-                                  fontWeight: 700,
-                                  background: isChecked ? "#DBEAFE" : "#F1F5F9",
-                                  color: isChecked ? "#1E40AF" : "#475569",
-                                  padding: "2px 6px",
-                                  borderRadius: "4px",
-                                }}
-                              >
-                                {paper.code}
-                              </span>
-                            </div>
-                            <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.2rem" }}>
-                              Duration: {paper.durationMinutes} mins • Pass: {paper.passPercent}%
-                            </div>
-                          </div>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
               </div>
 
-              {/* Modal Buttons */}
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setShowCreateModal(false)}
-                  disabled={submitting}
-                >
+                <button type="button" className="btn btn-ghost" onClick={() => setShowCreateModal(false)}>
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submitting}
-                  style={{ fontWeight: 700, minWidth: 150 }}
-                >
-                  {submitting ? "Creating College…" : "Save & Register College →"}
+                <button type="submit" className="btn btn-primary" disabled={submitting} style={{ fontWeight: 700 }}>
+                  {submitting ? "Creating…" : "Save & Register College →"}
                 </button>
               </div>
             </form>
@@ -1504,7 +1667,7 @@ export default function CollegesPage() {
       )}
 
       {/* ========================================================================= */}
-      {/* MODAL 2: ASSIGN EXISTING QUESTION PAPERS SEPARATELY TO SELECTED COLLEGE */}
+      {/* MODAL: ASSIGN PAPERS */}
       {/* ========================================================================= */}
       {showAssignModal && selectedCollege && (
         <div
@@ -1526,7 +1689,7 @@ export default function CollegesPage() {
           <div
             className="card"
             style={{
-              maxWidth: 560,
+              maxWidth: 540,
               width: "100%",
               maxHeight: "90vh",
               overflowY: "auto",
@@ -1535,15 +1698,10 @@ export default function CollegesPage() {
               border: "1px solid #BFDBFE",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-              <div>
-                <h2 style={{ margin: 0, color: "#1E3A8A", fontSize: "1.35rem" }}>
-                  📑 Assign Question Papers
-                </h2>
-                <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
-                  Configure paper access separately for <strong>{selectedCollege.name}</strong> ({selectedCollege.code}).
-                </p>
-              </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+              <h2 style={{ margin: 0, color: "#1E3A8A", fontSize: "1.3rem" }}>
+                📑 Assign Question Papers
+              </h2>
               <button
                 type="button"
                 className="btn btn-ghost btn-sm"
@@ -1554,45 +1712,11 @@ export default function CollegesPage() {
               </button>
             </div>
 
-            <div
-              style={{
-                background: "#EFF6FF",
-                border: "1px solid #BFDBFE",
-                borderRadius: "8px",
-                padding: "0.75rem 1rem",
-                fontSize: "0.83rem",
-                color: "#1E40AF",
-                marginBottom: "1.25rem",
-                lineHeight: 1.45,
-              }}
-            >
-              <strong>🔒 Strict Institutional Partition:</strong> Students registered under College Code <code>{selectedCollege.code}</code> will only have access to view and solve the question papers selected below. Other portal papers remain strictly inaccessible.
-            </div>
+            <p style={{ margin: "0 0 1rem", fontSize: "0.85rem", color: "var(--muted)" }}>
+              Manage assigned question paper sets for <strong>{selectedCollege.name}</strong> ({selectedCollege.code}).
+            </p>
 
             <form onSubmit={handleSavePaperAssignment}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.6rem" }}>
-                <span style={{ fontWeight: 600, fontSize: "0.88rem", color: "#1E293B" }}>
-                  Select Papers ({editAssignedPaperIds.length} of {papers.length} selected):
-                </span>
-                <div style={{ display: "flex", gap: "0.4rem" }}>
-                  <button
-                    type="button"
-                    onClick={() => setEditAssignedPaperIds(papers.map((p) => p.id))}
-                    style={{ background: "none", border: "none", color: "#2563EB", cursor: "pointer", fontSize: "0.75rem", textDecoration: "underline" }}
-                  >
-                    Select All
-                  </button>
-                  <span style={{ color: "#CBD5E1" }}>|</span>
-                  <button
-                    type="button"
-                    onClick={() => setEditAssignedPaperIds([])}
-                    style={{ background: "none", border: "none", color: "#64748B", cursor: "pointer", fontSize: "0.75rem", textDecoration: "underline" }}
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
               <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "1.5rem" }}>
                 {papers.map((paper) => {
                   const isChecked = editAssignedPaperIds.includes(paper.id);
@@ -1601,47 +1725,30 @@ export default function CollegesPage() {
                       key={paper.id}
                       style={{
                         display: "flex",
-                        alignItems: "flex-start",
+                        alignItems: "center",
                         gap: "0.75rem",
-                        padding: "0.75rem 0.85rem",
+                        padding: "0.65rem 0.85rem",
                         borderRadius: "6px",
-                        background: isChecked ? "#EFF6FF" : "#FFFFFF",
+                        background: isChecked ? "#EFF6FF" : "white",
                         border: isChecked ? "1px solid #93C5FD" : "1px solid #E2E8F0",
                         cursor: "pointer",
-                        transition: "all 0.15s ease",
                       }}
                     >
                       <input
                         type="checkbox"
                         checked={isChecked}
                         onChange={() => handleToggleEditPaper(paper.id)}
-                        style={{ marginTop: "0.2rem" }}
                       />
                       <div style={{ flex: 1 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                          <strong style={{ fontSize: "0.9rem", color: isChecked ? "#1E3A8A" : "#1E293B" }}>
-                            {paper.title}
-                          </strong>
-                          <span
-                            style={{
-                              fontFamily: "var(--font-mono)",
-                              fontSize: "0.78rem",
-                              fontWeight: 700,
-                              background: isChecked ? "#DBEAFE" : "#F1F5F9",
-                              color: isChecked ? "#1E40AF" : "#475569",
-                              padding: "2px 6px",
-                              borderRadius: "4px",
-                            }}
-                          >
+                        <div style={{ display: "flex", justifyContent: "space-between" }}>
+                          <strong style={{ fontSize: "0.88rem" }}>{paper.title}</strong>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.78rem", fontWeight: 700, color: "#1E40AF" }}>
                             {paper.code}
                           </span>
                         </div>
-                        <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: "0.25rem" }}>
-                          {paper.description || "Aptitude screen test set."}
-                        </div>
-                        <div style={{ fontSize: "0.78rem", color: "#2563EB", marginTop: "0.25rem" }}>
-                          ⏱️ {paper.durationMinutes} Minutes • Pass Threshold: {paper.passPercent}%
-                        </div>
+                        <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                          {paper.durationMinutes} Minutes • Pass {paper.passPercent}%
+                        </span>
                       </div>
                     </label>
                   );
@@ -1649,799 +1756,17 @@ export default function CollegesPage() {
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setShowAssignModal(false)}
-                  disabled={submitting}
-                >
+                <button type="button" className="btn btn-ghost" onClick={() => setShowAssignModal(false)}>
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submitting}
-                  style={{ fontWeight: 700 }}
-                >
-                  {submitting ? "Updating Allocation…" : "Save Paper Allocation →"}
+                <button type="submit" className="btn btn-primary" disabled={submitting}>
+                  {submitting ? "Saving…" : "Save Allocation →"}
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* MODAL 3: EDIT COLLEGE NAME / UNIQUE CODE / DESCRIPTION */}
-      {/* ========================================================================= */}
-      {showEditModal && selectedCollege && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(15, 23, 42, 0.6)",
-            backdropFilter: "blur(4px)",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              maxWidth: 520,
-              width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto",
-              padding: "2rem",
-              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
-              border: "1px solid #BFDBFE",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
-              <div>
-                <h2 style={{ margin: 0, color: "#1E3A8A", fontSize: "1.35rem" }}>
-                  ✏️ Edit College Details
-                </h2>
-                <p style={{ margin: "0.25rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
-                  Update the college name, unique code, or campus description.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowEditModal(false)}
-                style={{ fontSize: "1.2rem", padding: "0.2rem 0.5rem" }}
-              >
-                ✕
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveCollegeEdit}>
-              <div className="field" style={{ marginBottom: "1rem" }}>
-                <label htmlFor="edit-college-name" style={{ fontWeight: 600 }}>
-                  College Name *
-                </label>
-                <input
-                  id="edit-college-name"
-                  type="text"
-                  required
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  style={{ width: "100%", padding: "0.6rem 0.85rem" }}
-                />
-              </div>
-
-              <div className="field" style={{ marginBottom: "1rem" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.25rem" }}>
-                  <label htmlFor="edit-college-code" style={{ fontWeight: 600 }}>
-                    Unique College Code *
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const c = generateUniqueCollegeCode(editName);
-                      setEditCode(c);
-                    }}
-                    style={{ background: "none", border: "none", color: "#2563EB", cursor: "pointer", fontSize: "0.75rem", textDecoration: "underline" }}
-                  >
-                    ⚡ Regenerate Code
-                  </button>
-                </div>
-                <input
-                  id="edit-college-code"
-                  type="text"
-                  required
-                  value={editCode}
-                  onChange={(e) => setEditCode(e.target.value.toUpperCase())}
-                  style={{
-                    width: "100%",
-                    fontFamily: "var(--font-mono)",
-                    fontWeight: 700,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    padding: "0.6rem 0.85rem",
-                  }}
-                />
-              </div>
-
-              <div className="field" style={{ marginBottom: "1.25rem" }}>
-                <label htmlFor="edit-college-desc" style={{ fontWeight: 600 }}>
-                  Department / Campus Description
-                </label>
-                <input
-                  id="edit-college-desc"
-                  type="text"
-                  value={editDescription}
-                  onChange={(e) => setEditDescription(e.target.value)}
-                  style={{ width: "100%", padding: "0.6rem 0.85rem" }}
-                />
-              </div>
-
-              {/* Exam Duration & Login Approval Settings */}
-              <div
-                style={{
-                  background: "#F0FDFA",
-                  border: "1px solid #99F6E4",
-                  borderRadius: "8px",
-                  padding: "1rem",
-                  marginBottom: "1.5rem",
-                }}
-              >
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
-                  <span style={{ fontSize: "1.1rem" }}>⏱️</span>
-                  <strong style={{ fontSize: "0.92rem", color: "#0F766E" }}>
-                    Exam Duration & Login Approval Policy
-                  </strong>
-                </div>
-                <p style={{ margin: "0 0 0.85rem", fontSize: "0.78rem", color: "#115E59" }}>
-                  Enforce strict institutional exam windows. Students cannot submit before minimum duration and will be auto-submitted at maximum duration.
-                </p>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "0.85rem" }}>
-                  <div>
-                    <label htmlFor="edit-min-dur" style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#134E4A", marginBottom: "0.25rem" }}>
-                      Min Duration (Mins) *
-                    </label>
-                    <input
-                      id="edit-min-dur"
-                      type="number"
-                      min={1}
-                      max={editMaxDuration}
-                      required
-                      value={editMinDuration}
-                      onChange={(e) => setEditMinDuration(Math.max(1, parseInt(e.target.value) || 1))}
-                      style={{ width: "100%", padding: "0.5rem 0.75rem", fontSize: "0.88rem" }}
-                    />
-                    <span style={{ fontSize: "0.72rem", color: "#0D9488", display: "block", marginTop: "0.2rem" }}>
-                      Early submission blocked
-                    </span>
-                  </div>
-                  <div>
-                    <label htmlFor="edit-max-dur" style={{ display: "block", fontSize: "0.8rem", fontWeight: 600, color: "#134E4A", marginBottom: "0.25rem" }}>
-                      Max Duration (Mins) *
-                    </label>
-                    <input
-                      id="edit-max-dur"
-                      type="number"
-                      min={editMinDuration}
-                      max={480}
-                      required
-                      value={editMaxDuration}
-                      onChange={(e) => setEditMaxDuration(Math.max(editMinDuration, parseInt(e.target.value) || 60))}
-                      style={{ width: "100%", padding: "0.5rem 0.75rem", fontSize: "0.88rem" }}
-                    />
-                    <span style={{ fontSize: "0.72rem", color: "#0D9488", display: "block", marginTop: "0.2rem" }}>
-                      Auto-submit timer
-                    </span>
-                  </div>
-                </div>
-
-                <label
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.6rem",
-                    padding: "0.5rem 0.75rem",
-                    background: "#CCFBF1",
-                    borderRadius: "6px",
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={editRequireLoginApproval}
-                    onChange={(e) => setEditRequireLoginApproval(e.target.checked)}
-                  />
-                  <div style={{ fontSize: "0.8rem", color: "#0F766E" }}>
-                    <strong>Require Invigilator / Staff Login Approval</strong>
-                    <div style={{ fontSize: "0.72rem", color: "#115E59" }}>
-                      Enforce manual or batch approval before candidates enter the exam lobby
-                    </div>
-                  </div>
-                </label>
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setShowEditModal(false)}
-                  disabled={submitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submitting}
-                  style={{ fontWeight: 700 }}
-                >
-                  {submitting ? "Saving…" : "Save Changes"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* MODAL 4: DEDICATED EXAM DURATION & LOGIN APPROVAL CONFIGURATION MODAL     */}
-      {/* ========================================================================= */}
-      {showTimingModal && selectedCollege && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(15, 23, 42, 0.65)",
-            backdropFilter: "blur(5px)",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              maxWidth: 680,
-              width: "100%",
-              maxHeight: "92vh",
-              overflowY: "auto",
-              padding: "2rem",
-              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.3)",
-              border: "1px solid #99F6E4",
-              background: "#FFFFFF",
-            }}
-          >
-            {/* Header */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <span style={{ fontSize: "1.4rem" }}>⏱️</span>
-                  <h2 style={{ margin: 0, color: "#0F766E", fontSize: "1.35rem" }}>
-                    Configure Exam Timing & Student Login Approval
-                  </h2>
-                </div>
-                <p style={{ margin: "0.3rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
-                  Institutional Policy for <strong>{selectedCollege.name}</strong> (<code>{selectedCollege.code}</code>)
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowTimingModal(false)}
-                style={{ fontSize: "1.2rem", padding: "0.2rem 0.5rem" }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Institutional Lifecycle Simulation Card (matching user specification) */}
-            <div
-              style={{
-                background: "linear-gradient(135deg, #0F766E 0%, #115E59 100%)",
-                borderRadius: "10px",
-                padding: "1.25rem",
-                color: "#FFFFFF",
-                marginBottom: "1.5rem",
-                boxShadow: "0 4px 12px rgba(15, 118, 110, 0.2)",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
-                <span style={{ fontSize: "1rem" }}>📋</span>
-                <strong style={{ fontSize: "0.95rem", letterSpacing: "0.02em" }}>
-                  Institutional Timing Workflow
-                </strong>
-              </div>
-              <p style={{ margin: "0 0 0.75rem", fontSize: "0.82rem", opacity: 0.9, lineHeight: 1.45 }}>
-                Timer starts from <strong>actual server-recorded exam start time</strong> (not login time alone). Submissions are strictly locked until minimum duration has passed.
-              </p>
-
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-                  gap: "0.5rem",
-                  background: "rgba(255, 255, 255, 0.12)",
-                  borderRadius: "8px",
-                  padding: "0.75rem",
-                }}
-              >
-                <div style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: "0.72rem", opacity: 0.8, textTransform: "uppercase" }}>1. Login Time</div>
-                  <div style={{ fontWeight: 700, fontSize: "0.95rem" }}>1:00 PM</div>
-                  <div style={{ fontSize: "0.68rem", opacity: 0.75 }}>Enters Lobby</div>
-                </div>
-                <div style={{ textAlign: "center", borderLeft: "1px solid rgba(255,255,255,0.2)" }}>
-                  <div style={{ fontSize: "0.72rem", opacity: 0.8, textTransform: "uppercase" }}>2. Approval</div>
-                  <div style={{ fontWeight: 700, fontSize: "0.95rem" }}>Staff / Admin</div>
-                  <div style={{ fontSize: "0.68rem", opacity: 0.75 }}>One-click verify</div>
-                </div>
-                <div style={{ textAlign: "center", borderLeft: "1px solid rgba(255,255,255,0.2)" }}>
-                  <div style={{ fontSize: "0.72rem", opacity: 0.8, textTransform: "uppercase" }}>3. Exam Starts</div>
-                  <div style={{ fontWeight: 700, fontSize: "0.95rem" }}>1:00 PM</div>
-                  <div style={{ fontSize: "0.68rem", opacity: 0.75 }}>Server timer starts</div>
-                </div>
-                <div style={{ textAlign: "center", borderLeft: "1px solid rgba(255,255,255,0.2)" }}>
-                  <div style={{ fontSize: "0.72rem", opacity: 0.8, textTransform: "uppercase" }}>4. Min Allowed</div>
-                  <div style={{ fontWeight: 700, fontSize: "0.95rem", color: "#FDE047" }}>1:30 PM (30m)</div>
-                  <div style={{ fontSize: "0.68rem", opacity: 0.75 }}>Earliest Submit</div>
-                </div>
-                <div style={{ textAlign: "center", borderLeft: "1px solid rgba(255,255,255,0.2)" }}>
-                  <div style={{ fontSize: "0.72rem", opacity: 0.8, textTransform: "uppercase" }}>5. Max Duration</div>
-                  <div style={{ fontWeight: 700, fontSize: "0.95rem", color: "#FCA5A5" }}>2:00 PM (60m)</div>
-                  <div style={{ fontSize: "0.68rem", opacity: 0.75 }}>Auto-submits</div>
-                </div>
-              </div>
-            </div>
-
-            <form onSubmit={handleSaveTimingSettings}>
-              {/* Quick Preset Buttons */}
-              <div style={{ marginBottom: "1.25rem" }}>
-                <label style={{ display: "block", fontSize: "0.82rem", fontWeight: 700, color: "#1E293B", marginBottom: "0.4rem" }}>
-                  ⚡ Quick Duration Presets:
-                </label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-                  {[
-                    { label: "Standard (30m Min / 60m Max)", min: 30, max: 60 },
-                    { label: "Medium (45m Min / 90m Max)", min: 45, max: 90 },
-                    { label: "Full Session (60m Min / 120m Max)", min: 60, max: 120 },
-                    { label: "Quick Quiz (15m Min / 30m Max)", min: 15, max: 30 },
-                    { label: "Fast Test (5m Min / 15m Max)", min: 5, max: 15 },
-                  ].map((preset) => {
-                    const isSelected = timingMinDuration === preset.min && timingMaxDuration === preset.max;
-                    return (
-                      <button
-                        key={preset.label}
-                        type="button"
-                        onClick={() => {
-                          setTimingMinDuration(preset.min);
-                          setTimingMaxDuration(preset.max);
-                        }}
-                        style={{
-                          background: isSelected ? "#0F766E" : "#F0FDFA",
-                          color: isSelected ? "#FFFFFF" : "#0F766E",
-                          border: isSelected ? "1px solid #0F766E" : "1px solid #99F6E4",
-                          padding: "0.35rem 0.65rem",
-                          borderRadius: "6px",
-                          fontSize: "0.78rem",
-                          fontWeight: 600,
-                          cursor: "pointer",
-                          transition: "all 0.15s ease",
-                        }}
-                      >
-                        {preset.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* Main Inputs: Min & Max Duration */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: "1rem",
-                  background: "#F8FAFC",
-                  border: "1px solid #E2E8F0",
-                  borderRadius: "8px",
-                  padding: "1rem",
-                  marginBottom: "1.25rem",
-                }}
-              >
-                <div>
-                  <label htmlFor="timing-min-duration" style={{ display: "block", fontWeight: 700, color: "#1E293B", fontSize: "0.88rem", marginBottom: "0.3rem" }}>
-                    Minimum Exam Duration (Minutes) *
-                  </label>
-                  <input
-                    id="timing-min-duration"
-                    type="number"
-                    min={1}
-                    max={timingMaxDuration}
-                    required
-                    value={timingMinDuration}
-                    onChange={(e) => setTimingMinDuration(Math.max(1, parseInt(e.target.value) || 1))}
-                    style={{ width: "100%", padding: "0.6rem 0.85rem", fontSize: "1rem", fontWeight: 600 }}
-                  />
-                  <span style={{ fontSize: "0.75rem", color: "#64748B", display: "block", marginTop: "0.3rem" }}>
-                    🔒 Candidate <strong>cannot</strong> submit before {timingMinDuration} minutes have elapsed.
-                  </span>
-                </div>
-
-                <div>
-                  <label htmlFor="timing-max-duration" style={{ display: "block", fontWeight: 700, color: "#1E293B", fontSize: "0.88rem", marginBottom: "0.3rem" }}>
-                    Maximum Exam Duration (Minutes) *
-                  </label>
-                  <input
-                    id="timing-max-duration"
-                    type="number"
-                    min={timingMinDuration}
-                    max={480}
-                    required
-                    value={timingMaxDuration}
-                    onChange={(e) => setTimingMaxDuration(Math.max(timingMinDuration, parseInt(e.target.value) || 60))}
-                    style={{ width: "100%", padding: "0.6rem 0.85rem", fontSize: "1rem", fontWeight: 600 }}
-                  />
-                  <span style={{ fontSize: "0.75rem", color: "#64748B", display: "block", marginTop: "0.3rem" }}>
-                    ⌛ Candidate's exam is <strong>automatically submitted</strong> after {timingMaxDuration} minutes.
-                  </span>
-                </div>
-              </div>
-
-              {/* Student Login Approval Toggle */}
-              <div
-                style={{
-                  background: timingRequireLoginApproval ? "#F0FDF4" : "#FFFBEB",
-                  border: timingRequireLoginApproval ? "1px solid #BBF7D0" : "1px solid #FDE68A",
-                  borderRadius: "8px",
-                  padding: "1rem",
-                  marginBottom: "1rem",
-                }}
-              >
-                <label style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={timingRequireLoginApproval}
-                    onChange={(e) => setTimingRequireLoginApproval(e.target.checked)}
-                    style={{ marginTop: "0.25rem", width: 18, height: 18 }}
-                  />
-                  <div>
-                    <strong style={{ fontSize: "0.92rem", color: timingRequireLoginApproval ? "#166534" : "#92400E" }}>
-                      Require Student Login Approval by Admin or Staff
-                    </strong>
-                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: timingRequireLoginApproval ? "#15803D" : "#B45309", lineHeight: 1.45 }}>
-                      When enabled, newly registered or logged-in candidates under this college remain in <em>Pending Approval</em> state. They cannot start an examination session until an Admin or Staff invigilator approves their login.
-                    </p>
-                  </div>
-                </label>
-              </div>
-
-              {/* Official Exam Start Permission (Admin/Staff Gatekeeper) */}
-              <div
-                style={{
-                  background: timingExamStarted ? "#ECFDF5" : "#FFFBEB",
-                  border: timingExamStarted ? "1.5px solid #10B981" : "1.5px solid #FCD34D",
-                  borderRadius: "8px",
-                  padding: "1rem",
-                  marginBottom: "1.25rem",
-                }}
-              >
-                <label style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={timingExamStarted}
-                    onChange={(e) => setTimingExamStarted(e.target.checked)}
-                    style={{ marginTop: "0.25rem", width: 18, height: 18 }}
-                  />
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                      <strong style={{ fontSize: "0.92rem", color: timingExamStarted ? "#065F46" : "#92400E" }}>
-                        {timingExamStarted ? "🟢 Official Exam Start Permission: GRANTED (Exam Is Live)" : "⏸️ Official Exam Start Permission: LOCKED (Holding in Lobby)"}
-                      </strong>
-                    </div>
-                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: timingExamStarted ? "#047857" : "#78350F", lineHeight: 1.45 }}>
-                      {timingExamStarted
-                        ? "Exam start permission is active on the server. Candidates who complete readiness & login verification can immediately click 'Enter Live Examination' to begin."
-                        : "Candidates are held in the waiting lobby until an Administrator or Staff invigilator grants start permission. Candidates cannot begin their exam."}
-                    </p>
-                  </div>
-                </label>
-              </div>
-
-              {/* Dynamic Calculation Summary */}
-              <div
-                style={{
-                  background: "#EFF6FF",
-                  border: "1px solid #BFDBFE",
-                  borderRadius: "8px",
-                  padding: "0.85rem 1rem",
-                  fontSize: "0.82rem",
-                  color: "#1E40AF",
-                  marginBottom: "1.5rem",
-                  lineHeight: 1.45,
-                }}
-              >
-                <strong>📊 Active Policy Summary:</strong> For a student beginning an exam session at <strong>1:00 PM</strong>, submission will be unlocked at <strong>1:{timingMinDuration < 10 ? `0${timingMinDuration}` : timingMinDuration} PM</strong> ({timingMinDuration} mins), and auto-submission will execute strictly at <strong>{Math.floor(1 + timingMaxDuration / 60)}:{(timingMaxDuration % 60) < 10 ? `0${timingMaxDuration % 60}` : (timingMaxDuration % 60)} PM</strong> ({timingMaxDuration} mins). Answers are autosaved continually.
-              </div>
-
-              {/* Modal Buttons */}
-              <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={() => setShowTimingModal(false)}
-                  disabled={submitting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={submitting}
-                  style={{
-                    fontWeight: 700,
-                    background: "#0F766E",
-                    borderColor: "#0F766E",
-                    padding: "0.6rem 1.25rem",
-                  }}
-                >
-                  {submitting ? "Saving Policy…" : "Save Timing & Approval Policy →"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* MODAL 5: STUDENT LOGIN APPROVALS ROSTER                                   */}
-      {/* ========================================================================= */}
-      {showApprovalsModal && approvalsCollege && (
-        <div
-          style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(15, 23, 42, 0.65)",
-            backdropFilter: "blur(5px)",
-            zIndex: 1000,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
-        >
-          <div
-            className="card"
-            style={{
-              maxWidth: 760,
-              width: "100%",
-              maxHeight: "92vh",
-              overflowY: "auto",
-              padding: "2rem",
-              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.3)",
-              border: "1px solid #99F6E4",
-              background: "#FFFFFF",
-            }}
-          >
-            {/* Header */}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <span style={{ fontSize: "1.4rem" }}>👥</span>
-                  <h2 style={{ margin: 0, color: "#0F766E", fontSize: "1.35rem" }}>
-                    Student Login Approvals Roster
-                  </h2>
-                </div>
-                <p style={{ margin: "0.3rem 0 0", fontSize: "0.85rem", color: "var(--muted)" }}>
-                  Review and authorize student logins for <strong>{approvalsCollege.name}</strong> (<code>{approvalsCollege.code}</code>)
-                </p>
-              </div>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => setShowApprovalsModal(false)}
-                style={{ fontSize: "1.2rem", padding: "0.2rem 0.5rem" }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Notification message */}
-            {approvalMessage && (
-              <div
-                style={{
-                  background: "#ECFDF5",
-                  border: "1px solid #A7F3D0",
-                  color: "#065F46",
-                  padding: "0.6rem 0.85rem",
-                  borderRadius: "6px",
-                  fontSize: "0.85rem",
-                  marginBottom: "1rem",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                }}
-              >
-                <span>✅</span>
-                <span>{approvalMessage}</span>
-              </div>
-            )}
-
-            {/* Approval Controls Toolbar */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                background: "#F0FDFA",
-                border: "1px solid #CCFBF1",
-                borderRadius: "8px",
-                padding: "0.75rem 1rem",
-                marginBottom: "1.25rem",
-              }}
-            >
-              <div>
-                <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "#0F766E" }}>
-                  Enrolled Students ({collegeStudents.length})
-                </span>
-                <span style={{ fontSize: "0.78rem", color: "#115E59", marginLeft: "0.5rem" }}>
-                  • {collegeStudents.filter((s) => s.loginApproved).length} Approved • {collegeStudents.filter((s) => !s.loginApproved).length} Pending
-                </span>
-              </div>
-
-              <div style={{ display: "flex", gap: "0.5rem" }}>
-                <button
-                  type="button"
-                  className="btn btn-sm"
-                  onClick={handleApproveAllStudents}
-                  disabled={collegeStudents.filter((s) => !s.loginApproved).length === 0}
-                  style={{
-                    background: "#0F766E",
-                    color: "#FFFFFF",
-                    border: "none",
-                    fontWeight: 700,
-                    fontSize: "0.8rem",
-                    padding: "0.35rem 0.75rem",
-                  }}
-                >
-                  ✓ Approve All Pending ({collegeStudents.filter((s) => !s.loginApproved).length})
-                </button>
-              </div>
-            </div>
-
-            {/* Students List */}
-            {loadingStudents ? (
-              <div style={{ textAlign: "center", padding: "2rem", color: "var(--muted)" }}>
-                Loading enrolled students…
-              </div>
-            ) : collegeStudents.length === 0 ? (
-              <div style={{ textAlign: "center", padding: "2rem", background: "#F8FAFC", borderRadius: "8px", border: "1px dashed #CBD5E1" }}>
-                <p style={{ margin: 0, fontWeight: 600, color: "#64748B" }}>
-                  No students currently registered under college code <code>{approvalsCollege.code}</code>.
-                </p>
-                <p style={{ margin: "0.25rem 0 0", fontSize: "0.8rem", color: "#94A3B8" }}>
-                  When students register or log in with this code, they will appear here for verification.
-                </p>
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", maxHeight: 400, overflowY: "auto" }}>
-                {collegeStudents.map((student) => {
-                  const isApproved = student.loginApproved;
-                  return (
-                    <div
-                      key={student.id}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        padding: "0.75rem 1rem",
-                        borderRadius: "8px",
-                        background: isApproved ? "#FFFFFF" : "#FEF3C7",
-                        border: isApproved ? "1px solid #E2E8F0" : "1px solid #FCD34D",
-                        transition: "all 0.15s ease",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-                        <div
-                          style={{
-                            width: 36,
-                            height: 36,
-                            borderRadius: "50%",
-                            background: isApproved ? "#DCFCE7" : "#FEE2E2",
-                            color: isApproved ? "#15803D" : "#991B1B",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "center",
-                            fontWeight: 700,
-                            fontSize: "0.88rem",
-                          }}
-                        >
-                          {student.name ? student.name[0].toUpperCase() : "S"}
-                        </div>
-                        <div>
-                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                            <strong style={{ fontSize: "0.9rem", color: "#1E293B" }}>
-                              {student.name}
-                            </strong>
-                            <span
-                              style={{
-                                fontSize: "0.7rem",
-                                fontWeight: 700,
-                                padding: "2px 6px",
-                                borderRadius: "4px",
-                                background: isApproved ? "#DCFCE7" : "#FEE2E2",
-                                color: isApproved ? "#166534" : "#991B1B",
-                              }}
-                            >
-                              {isApproved ? "✓ APPROVED" : "⏳ PENDING APPROVAL"}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.15rem" }}>
-                            {student.email} • Roll: <code>{student.rollNumber || "N/A"}</code>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={{ display: "flex", gap: "0.4rem" }}>
-                        {isApproved ? (
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-sm"
-                            onClick={() => handleRevokeStudent(student.id)}
-                            style={{ fontSize: "0.75rem", color: "#DC2626", borderColor: "#FCA5A5" }}
-                            title="Revoke login approval"
-                          >
-                            Revoke Approval
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            className="btn btn-primary btn-sm"
-                            onClick={() => handleApproveStudent(student.id)}
-                            style={{
-                              fontSize: "0.78rem",
-                              fontWeight: 700,
-                              background: "#059669",
-                              borderColor: "#059669",
-                            }}
-                          >
-                            ✓ Approve Login
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "1.5rem" }}>
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => setShowApprovalsModal(false)}
-              >
-                Close Roster
-              </button>
-            </div>
           </div>
         </div>
       )}
     </PortalShell>
   );
 }
-
