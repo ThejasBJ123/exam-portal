@@ -1506,11 +1506,55 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       delete student.loginApprovedAt;
       delete student.loginApprovedBy;
 
+      if (store.currentUser && (store.currentUser.id === student.id || store.currentUser.phone === student.phone)) {
+        store.currentUser.loginApproved = false;
+        store.currentUser.approvalStatus = "PENDING";
+        delete store.currentUser.loginApprovedAt;
+        delete store.currentUser.loginApprovedBy;
+      }
+
       const curSess = getSessionForUser(store, student);
       if (curSess) curSess.isLoginApproved = false;
+      if (store.session && (store.session.studentId === student.id || store.session.phone === student.phone)) {
+        store.session.isLoginApproved = false;
+      }
 
       saveStore(store);
       return { ok: true, student };
+    }
+
+    // Specific College operations: /colleges/:id/revoke-all-students
+    if (path.includes("/revoke-all-students") && method === "POST") {
+      const parts = path.split("/");
+      const colId = parts[parts.indexOf("revoke-all-students") - 1];
+      const targetCol = store.colleges.find((c: any) => c.id === colId);
+      if (!targetCol) throw new ApiError(404, "College not found.");
+
+      let revokedCount = 0;
+      (store.users || []).forEach((u: any) => {
+        if (u.role === "STUDENT" && u.collegeCode && u.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
+          u.loginApproved = false;
+          u.approvalStatus = "PENDING";
+          delete u.loginApprovedAt;
+          delete u.loginApprovedBy;
+          const sess = getSessionForUser(store, u);
+          if (sess) sess.isLoginApproved = false;
+          revokedCount++;
+        }
+      });
+
+      if (store.currentUser && store.currentUser.collegeCode && store.currentUser.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
+        store.currentUser.loginApproved = false;
+        store.currentUser.approvalStatus = "PENDING";
+        delete store.currentUser.loginApprovedAt;
+        delete store.currentUser.loginApprovedBy;
+      }
+      if (store.session) {
+        store.session.isLoginApproved = false;
+      }
+
+      saveStore(store);
+      return { ok: true, revokedCount };
     }
 
     // Specific College operations: /colleges/:id/assign-papers
@@ -2317,8 +2361,9 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     if (termRest || curSess.status === "TERMINATED" || curSess.warningCount >= 3 || store.currentUser?.isTerminated) {
       throw new ApiError(403, "Access Blocked: Your examination sitting was terminated due to exceeding 3 proctoring alerts. You cannot re-enter or take exams.");
     }
-    if (curSess.status === "SUBMITTED" || curSess.status === "TIMED_OUT") {
-      throw new ApiError(403, "Examination already submitted. Under the single-attempt policy, re-attempts are prohibited.");
+    const userInList = (store.users || []).find((u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone));
+    if (curSess.status === "SUBMITTED" || curSess.status === "TIMED_OUT" || userInList?.examStatus === "SUBMITTED" || userInList?.examStatus === "TIMED_OUT") {
+      throw new ApiError(403, "Examination Already Ended: You have completed and submitted this examination. Under institutional single-attempt policy, re-joining or re-attempting is strictly prohibited.");
     }
 
     // Verify candidate college & login approval settings
@@ -2334,7 +2379,6 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     const requireApproval = (candidateCollege?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? candidateCollege?.requireLoginApproval ?? true;
 
     // Login Approval Check
-    const userInList = (store.users || []).find((u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone));
     const isCandidateApproved = Boolean(
       !requireApproval ||
       curSess?.isLoginApproved === true ||
@@ -2445,6 +2489,12 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       curSess.terminatedReason = "MAX_WARNINGS_EXCEEDED";
     }
     store.session = curSess;
+
+    const candUser = (store.users || []).find((u: any) => u.id === curSess.studentId || (curSess.phone && u.phone === curSess.phone) || (store.currentUser && u.id === store.currentUser.id));
+    if (candUser) {
+      candUser.examStatus = curSess.status;
+      candUser.submittedAt = new Date().toISOString();
+    }
 
     if (store.currentUser) {
       store.currentUser.examStatus = curSess.status;

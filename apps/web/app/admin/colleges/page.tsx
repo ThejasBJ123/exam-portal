@@ -401,13 +401,29 @@ export default function CollegesPage() {
         method: "POST",
         body: JSON.stringify({ studentId }),
       });
-      setApprovalMessage("Student login approval revoked (reset to Pending).");
+      setApprovalMessage("Student login approval turned OFF (reset to Pending).");
       const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
       setCollegeStudents(updated);
       await loadData();
       setTimeout(() => setApprovalMessage(""), 4000);
     } catch (err: any) {
-      setErrorMessage(err.message || "Failed to revoke student approval.");
+      setErrorMessage(err.message || "Failed to turn OFF student approval.");
+    }
+  }
+
+  async function handleRevokeAllStudents() {
+    if (!approvalsCollege) return;
+    try {
+      const res = await api<{ revokedCount: number }>(`/colleges/${approvalsCollege.id}/revoke-all-students`, {
+        method: "POST",
+      });
+      setApprovalMessage(`Successfully turned OFF approval for all ${res.revokedCount || 0} candidate logins!`);
+      const updated = await api<any[]>(`/colleges/${approvalsCollege.id}/students`);
+      setCollegeStudents(updated);
+      await loadData();
+      setTimeout(() => setApprovalMessage(""), 4000);
+    } catch (err: any) {
+      setErrorMessage(err.message || "Failed to turn OFF all student approvals.");
     }
   }
 
@@ -2202,8 +2218,26 @@ export default function CollegesPage() {
                     fontSize: "0.8rem",
                     padding: "0.35rem 0.75rem",
                   }}
+                  title="Turn ON approval for all pending students"
                 >
-                  ✓ Approve All Pending ({collegeStudents.filter((s) => !s.loginApproved).length})
+                  ✓ Turn ALL ON ({collegeStudents.filter((s) => !s.loginApproved).length})
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  onClick={handleRevokeAllStudents}
+                  disabled={collegeStudents.filter((s) => s.loginApproved).length === 0}
+                  style={{
+                    background: "#FEF2F2",
+                    color: "#DC2626",
+                    border: "1px solid #FCA5A5",
+                    fontWeight: 700,
+                    fontSize: "0.8rem",
+                    padding: "0.35rem 0.75rem",
+                  }}
+                  title="Turn OFF approval for all students"
+                >
+                  ✕ Turn ALL OFF ({collegeStudents.filter((s) => s.loginApproved).length})
                 </button>
               </div>
             </div>
@@ -2225,7 +2259,7 @@ export default function CollegesPage() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", maxHeight: 400, overflowY: "auto" }}>
                 {collegeStudents.map((student) => {
-                  const isApproved = student.loginApproved;
+                  const isApproved = Boolean(student.loginApproved);
                   return (
                     <div
                       key={student.id}
@@ -2272,7 +2306,7 @@ export default function CollegesPage() {
                                 color: isApproved ? "#166534" : "#991B1B",
                               }}
                             >
-                              {isApproved ? "✓ APPROVED" : "⏳ PENDING APPROVAL"}
+                              {isApproved ? "✓ APPROVED (ON)" : "⏳ PENDING (OFF)"}
                             </span>
                           </div>
                           <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "0.15rem" }}>
@@ -2281,16 +2315,69 @@ export default function CollegesPage() {
                         </div>
                       </div>
 
-                      <div style={{ display: "flex", gap: "0.4rem" }}>
+                      {/* Interactive ON / OFF Switch and Actions */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.6rem" }}>
+                        <button
+                          type="button"
+                          onClick={() => (isApproved ? handleRevokeStudent(student.id) : handleApproveStudent(student.id))}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.5rem",
+                            background: isApproved ? "#ECFDF5" : "#F1F5F9",
+                            border: isApproved ? "1.5px solid #10B981" : "1.5px solid #CBD5E1",
+                            borderRadius: "9999px",
+                            padding: "3px 8px 3px 5px",
+                            cursor: "pointer",
+                            transition: "all 0.2s ease",
+                          }}
+                          title={isApproved ? "Approval is ON — Click to switch OFF (Revoke)" : "Approval is OFF — Click to switch ON (Approve)"}
+                        >
+                          <div
+                            style={{
+                              width: "34px",
+                              height: "18px",
+                              borderRadius: "9999px",
+                              background: isApproved ? "#16A34A" : "#94A3B8",
+                              position: "relative",
+                              transition: "background 0.2s ease",
+                            }}
+                          >
+                            <div
+                              style={{
+                                width: "14px",
+                                height: "14px",
+                                borderRadius: "50%",
+                                background: "#FFFFFF",
+                                position: "absolute",
+                                top: "2px",
+                                left: isApproved ? "18px" : "2px",
+                                transition: "left 0.2s ease",
+                                boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                              }}
+                            />
+                          </div>
+                          <span
+                            style={{
+                              fontSize: "0.75rem",
+                              fontWeight: 800,
+                              letterSpacing: "0.04em",
+                              color: isApproved ? "#15803D" : "#64748B",
+                            }}
+                          >
+                            {isApproved ? "ON" : "OFF"}
+                          </span>
+                        </button>
+
                         {isApproved ? (
                           <button
                             type="button"
                             className="btn btn-ghost btn-sm"
                             onClick={() => handleRevokeStudent(student.id)}
-                            style={{ fontSize: "0.75rem", color: "#DC2626", borderColor: "#FCA5A5" }}
-                            title="Revoke login approval"
+                            style={{ fontSize: "0.75rem", color: "#DC2626", borderColor: "#FCA5A5", padding: "0.25rem 0.55rem" }}
+                            title="Turn OFF approval for this student"
                           >
-                            Revoke Approval
+                            Turn OFF
                           </button>
                         ) : (
                           <button
@@ -2298,13 +2385,15 @@ export default function CollegesPage() {
                             className="btn btn-primary btn-sm"
                             onClick={() => handleApproveStudent(student.id)}
                             style={{
-                              fontSize: "0.78rem",
+                              fontSize: "0.75rem",
                               fontWeight: 700,
                               background: "#059669",
                               borderColor: "#059669",
+                              padding: "0.25rem 0.65rem",
                             }}
+                            title="Turn ON approval for this student"
                           >
-                            ✓ Approve Login
+                            Turn ON
                           </button>
                         )}
                       </div>
