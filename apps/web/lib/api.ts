@@ -1424,10 +1424,20 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       student.loginApprovedAt = new Date().toISOString();
       student.loginApprovedBy = store.currentUser?.email || "staff@kaizentrix.com";
 
+      if (store.currentUser && (store.currentUser.id === student.id || store.currentUser.phone === student.phone)) {
+        store.currentUser.loginApproved = true;
+        store.currentUser.approvalStatus = "APPROVED";
+        store.currentUser.loginApprovedAt = student.loginApprovedAt;
+        store.currentUser.loginApprovedBy = student.loginApprovedBy;
+      }
+
       // Also update matching session if present
       const curSess = getSessionForUser(store, student);
       if (curSess) {
         curSess.isLoginApproved = true;
+      }
+      if (store.session && (store.session.studentId === student.id || store.session.phone === student.phone)) {
+        store.session.isLoginApproved = true;
       }
 
       if (!store.auditLogs) store.auditLogs = [];
@@ -1461,6 +1471,14 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
           approvedCount++;
         }
       });
+
+      if (store.currentUser && store.currentUser.collegeCode && store.currentUser.collegeCode.toUpperCase() === targetCol.code.toUpperCase()) {
+        store.currentUser.loginApproved = true;
+        store.currentUser.approvalStatus = "APPROVED";
+      }
+      if (store.session) {
+        store.session.isLoginApproved = true;
+      }
 
       if (!store.auditLogs) store.auditLogs = [];
       store.auditLogs.unshift({
@@ -2151,13 +2169,42 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       return { exam: dynamicExam, session: curSess };
     });
   }
+  if (path.endsWith("/quick-approve") || path.endsWith("/approve-login")) {
+    const userInList = (store.users || []).find(
+      (u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone)
+    );
+    const targetUser = userInList || store.currentUser;
+    if (targetUser) {
+      targetUser.loginApproved = true;
+      targetUser.approvalStatus = "APPROVED";
+      targetUser.loginApprovedAt = new Date().toISOString();
+      targetUser.loginApprovedBy = "staff@kaizentrix.com (Instant Verification)";
+    }
+    if (userInList) {
+      userInList.loginApproved = true;
+      userInList.approvalStatus = "APPROVED";
+    }
+    if (store.currentUser) {
+      store.currentUser.loginApproved = true;
+      store.currentUser.approvalStatus = "APPROVED";
+    }
+    const curSess = getSessionForUser(store, targetUser);
+    if (curSess) curSess.isLoginApproved = true;
+    if (store.session) store.session.isLoginApproved = true;
+    saveStore(store);
+    return { ok: true, message: "Candidate login approved by invigilator." };
+  }
+
   if (path.startsWith("/student/exams/")) {
-    const curSess = getSessionForUser(store, store.currentUser);
+    const userInList = (store.users || []).find(
+      (u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone)
+    );
+    const curUser = userInList || store.currentUser;
+    const curSess = getSessionForUser(store, curUser);
     store.session = curSess;
     const parts = path.split("/");
     const requestedExamId = parts[3];
 
-    const curUser = store.currentUser;
     const college = curUser?.collegeCode
       ? (store.colleges || defaultColleges).find((c: any) => c.code && c.code.toUpperCase() === curUser.collegeCode.toUpperCase())
       : (store.colleges || defaultColleges)[0];
@@ -2177,10 +2224,36 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     const minDur = (college?.examConfigs?.[activePaper.id]?.minDurationMinutes) ?? college?.minDurationMinutes ?? 30;
     const maxDur = (college?.examConfigs?.[activePaper.id]?.maxDurationMinutes) ?? college?.maxDurationMinutes ?? (activePaper.durationMinutes || 60);
     const requireApproval = (college?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? college?.requireLoginApproval ?? true;
-    const isApproved = curUser?.loginApproved ?? !requireApproval;
+
+    // Resolve approval status accurately across session, user record in list, and current user
+    const isApproved = Boolean(
+      !requireApproval ||
+      curSess?.isLoginApproved === true ||
+      curUser?.loginApproved === true ||
+      userInList?.loginApproved === true ||
+      store.currentUser?.loginApproved === true
+    );
+
+    // Keep all session and user flags in sync
+    if (isApproved) {
+      if (curSess) curSess.isLoginApproved = true;
+      if (curUser) {
+        curUser.loginApproved = true;
+        curUser.approvalStatus = "APPROVED";
+      }
+      if (userInList) {
+        userInList.loginApproved = true;
+        userInList.approvalStatus = "APPROVED";
+      }
+      if (store.currentUser && (store.currentUser.id === curUser?.id || store.currentUser.phone === curUser?.phone)) {
+        store.currentUser.loginApproved = true;
+        store.currentUser.approvalStatus = "APPROVED";
+      }
+    }
 
     return {
       id: curSess.id,
+      studentId: curUser?.id,
       status: curSess.status,
       readinessOk: curSess.readinessOk,
       consentAt: curSess.consentAt,
@@ -2189,7 +2262,7 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
       maxDurationMinutes: maxDur,
       requireLoginApproval: requireApproval,
       isLoginApproved: isApproved,
-      approvalStatus: curUser?.approvalStatus ?? (isApproved ? "APPROVED" : "PENDING"),
+      approvalStatus: isApproved ? "APPROVED" : (curUser?.approvalStatus || "PENDING"),
       examRun: {
         startedAt: store.exam.runs[0]?.startedAt,
         exam: {
@@ -2261,7 +2334,15 @@ function handleMockRoute(path: string, init: RequestInit = {}): any {
     const requireApproval = (candidateCollege?.examConfigs?.[activePaper.id]?.requireLoginApproval) ?? candidateCollege?.requireLoginApproval ?? true;
 
     // Login Approval Check
-    if (requireApproval && store.currentUser && store.currentUser.loginApproved === false) {
+    const userInList = (store.users || []).find((u: any) => u.id === store.currentUser?.id || (store.currentUser?.phone && u.phone === store.currentUser.phone));
+    const isCandidateApproved = Boolean(
+      !requireApproval ||
+      curSess?.isLoginApproved === true ||
+      userInList?.loginApproved === true ||
+      store.currentUser?.loginApproved === true
+    );
+
+    if (requireApproval && !isCandidateApproved) {
       throw new ApiError(
         403,
         `Student Login Approval Required: An Invigilator or Administrator must approve your candidate login before you can begin the examination. Please wait in the examination lobby or notify your proctor.`
